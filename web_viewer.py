@@ -305,44 +305,49 @@ HTML_TEMPLATE = """
             else if(tabName === 'analysis') btns[2].classList.add('active');
         }
         
-        // --- 关键辅助函数 ---
+        // --- 核心辅助函数 ---
 
-        // 1. 文本清洗：去除 SenseVoice 的标签 (<|zh|>, <|happy|>)
+        // 1. 深度文本清洗：去除标签、标点、空格
         function cleanText(text) {
             if (!text) return "";
-            return text.replace(/<\|.*?\|>/g, "");
+            // 去除 SenseVoice 标签
+            let clean = text.replace(/<\|.*?\|>/g, "");
+            return clean;
         }
 
-        // 2. 获取头像颜色索引 (支持字符串ID，如"爸爸")
+        // 2. 检查是否包含有效内容 (过滤掉只有标点符号的情况)
+        function hasMeaningfulContent(text) {
+            if (!text) return false;
+            const clean = cleanText(text);
+            // 去除所有标点符号、空格、换行
+            // 匹配：英文标点, 中文标点, 空白符
+            const stripped = clean.replace(/[.,\/#!$%\^&\*;:{}=\-_`~()。，、？！：；“”‘’\s]/g, "");
+            return stripped.length > 0;
+        }
+
+        // 3. 获取头像颜色索引
         function getAvatarIndex(spkId) {
             if (typeof spkId === 'number') return spkId;
             if (!spkId) return 0;
-            
-            // 字符串哈希算法
             let hash = 0;
             const str = String(spkId);
-            for (let i = 0; i < str.length; i++) {
-                hash = str.charCodeAt(i) + ((hash << 5) - hash);
-            }
+            for (let i = 0; i < str.length; i++) hash += str.charCodeAt(i);
             return Math.abs(hash);
         }
 
-        // 3. 预处理统计数据
+        // 4. 预处理统计数据
         function processStats(items) {
             items.forEach(item => {
                 const stats = {};
                 if (item.segments && item.segments.length > 0) {
                     item.segments.forEach(seg => {
-                        // 清洗文本用于统计
-                        const clean = cleanText(seg.text);
-                        if (!clean.trim()) return;
+                        // 只有有效内容才计入统计
+                        if (!hasMeaningfulContent(seg.text)) return;
 
                         const spkId = seg.spk_id !== undefined ? seg.spk_id : 'unknown';
                         const spkName = typeof seg.spk_id === 'number' ? `说话人 ${seg.spk_id}` : (seg.spk_id || "未知");
                         
-                        // 确保 key 是字符串，但我们在内部处理时知道它是谁
                         const key = String(spkId); 
-
                         if (!stats[key]) {
                             stats[key] = {
                                 original_id: spkId,
@@ -352,7 +357,6 @@ HTML_TEMPLATE = """
                             };
                         }
                         stats[key].count += 1;
-                        // 容错：如果 start 或 end 缺失
                         const dur = (seg.end && seg.start) ? (seg.end - seg.start) : 0;
                         stats[key].total_duration += dur;
                     });
@@ -364,7 +368,6 @@ HTML_TEMPLATE = """
 
         async function updateLoop() {
             try {
-                // 1. 状态更新
                 const statusRes = await fetch('/api/status');
                 const statusData = await statusRes.json();
                 const asrBadge = document.getElementById('status-asr');
@@ -378,11 +381,9 @@ HTML_TEMPLATE = """
                 const consoleWin = document.querySelector('.console-window');
                 consoleWin.scrollTop = consoleWin.scrollHeight;
 
-                // 2. 数据更新
                 const dataRes = await fetch('/api/data');
                 let items = await dataRes.json();
                 
-                // 计算统计
                 items = processStats(items);
                 
                 if (items.length === 0) return;
@@ -401,17 +402,30 @@ HTML_TEMPLATE = """
             const container = document.getElementById('dashboard-content');
             let html = "";
             items.forEach(item => {
+                // === 严格过滤 ===
+                // 如果全文都没有有效内容(去标点后为空)，直接跳过整张卡片
+                let hasValidContent = false;
+                if (item.segments && item.segments.length > 0) {
+                    hasValidContent = item.segments.some(seg => hasMeaningfulContent(seg.text));
+                } else {
+                    hasValidContent = hasMeaningfulContent(item.full_text);
+                }
+                if (!hasValidContent) return; // 跳过无效文件
+                // ===============
+
                 let segHtml = "";
                 if (item.segments && item.segments.length > 0) {
                     item.segments.forEach(seg => {
+                        if (!hasMeaningfulContent(seg.text)) return; // 跳过无效片段
                         const txt = cleanText(seg.text);
-                        if (!txt.trim()) return;
                         segHtml += `<div class="segment"><span class="timestamp">[${seg.start_fmt}]</span><span>${txt}</span></div>`;
                     });
                 } else {
                     const txt = cleanText(item.full_text);
                     if (txt) segHtml = `<div class="segment"><span>${txt}</span></div>`;
                 }
+                
+                // 二次检查：如果过滤后没有 segHtml 了，也不渲染
                 if (!segHtml) return;
 
                 html += `
@@ -429,14 +443,15 @@ HTML_TEMPLATE = """
             let currentDay = "";
 
             items.forEach(item => {
-                // 预检内容
-                let hasContent = false;
+                // === 严格过滤 ===
+                let hasValidContent = false;
                 if (item.segments && item.segments.length > 0) {
-                    hasContent = item.segments.some(seg => cleanText(seg.text).trim() !== "");
-                } else if (cleanText(item.full_text).trim() !== "") {
-                    hasContent = true;
+                    hasValidContent = item.segments.some(seg => hasMeaningfulContent(seg.text));
+                } else {
+                    hasValidContent = hasMeaningfulContent(item.full_text);
                 }
-                if (!hasContent) return;
+                if (!hasValidContent) return; 
+                // ===============
 
                 if (item.date_group !== currentDay) {
                     html += `<div class="chat-date-separator"><span class="chat-date-label">${item.date_group}</span></div>`;
@@ -446,15 +461,13 @@ HTML_TEMPLATE = """
 
                 if (item.segments && item.segments.length > 0) {
                     item.segments.forEach(seg => {
-                        const txt = cleanText(seg.text);
-                        if (!txt.trim()) return;
+                        if (!hasMeaningfulContent(seg.text)) return; // 跳过无效气泡
                         
+                        const txt = cleanText(seg.text);
                         const spkId = seg.spk_id !== undefined ? seg.spk_id : 0;
                         let spkName = typeof spkId === 'number' ? `说话人 ${spkId}` : spkId;
                         let avatarIdx = getAvatarIndex(spkId);
                         
-                        
-
                         html += `
                             <div class="chat-bubble-row">
                                 <div class="avatar avatar-${avatarIdx % 10}">User</div>
@@ -489,7 +502,6 @@ HTML_TEMPLATE = """
             items.forEach(item => {
                 if (item.speaker_stats) {
                     for (const [key, stats] of Object.entries(item.speaker_stats)) {
-                        
                         if (!globalSpeakerStats[key]) {
                             globalSpeakerStats[key] = {
                                 original_id: stats.original_id,
@@ -506,8 +518,6 @@ HTML_TEMPLATE = """
                 }
             });
             
-            
-
             let html = `
                 <div class="analysis-card">
                     <h3>📊 声纹识别统计分析</h3>
@@ -515,7 +525,6 @@ HTML_TEMPLATE = """
                 </div>
                 <div class="speaker-grid">`;
             
-            // 排序：按发言次数从多到少
             const sortedStats = Object.values(globalSpeakerStats).sort((a, b) => b.totalCount - a.totalCount);
 
             for (const stats of sortedStats) {
@@ -523,7 +532,6 @@ HTML_TEMPLATE = """
                 const filesCount = stats.filesParticipated.size;
                 const avatarIdx = getAvatarIndex(stats.original_id);
                 
-                // 截取名字的最后一个字作为头像文字 (如果是数字ID，就显示数字)
                 let iconText = "";
                 if (typeof stats.original_id === 'number') {
                     iconText = stats.original_id;
