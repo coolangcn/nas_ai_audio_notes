@@ -43,7 +43,8 @@ def get_system_status():
         status["asr_server"] = "offline"
 
     try:
-        files = [f for f in os.listdir(SOURCE_DIR) if f.endswith(".m4a")]
+        files = [f for f in os.listdir(SOURCE_DIR) 
+                 if f.endswith(".m4a") or f.endswith(".acc") or f.endswith(".aac")]
         status["pending_files"] = len(files)
     except:
         status["pending_files"] = -1
