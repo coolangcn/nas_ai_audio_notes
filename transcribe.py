@@ -7,7 +7,7 @@ import requests
 import json
 import datetime
 import sqlite3
-import time # <-- 必须导入 time
+import time
 
 # --- 配置 ---
 CONFIG = {
@@ -19,6 +19,13 @@ CONFIG = {
     "DB_PATH": "/volume2/download/records/Sony-2/transcripts.db" 
 }
 # ---------------------------------------------
+
+def format_time(ms):
+    """辅助函数：将毫秒转换为 HH:MM:SS 格式"""
+    seconds = ms / 1000
+    m, s = divmod(seconds, 60)
+    h, m = divmod(m, 60)
+    return f"{int(h):02}:{int(m):02}:{int(s):02}"
 
 def init_db():
     try:
@@ -42,6 +49,8 @@ def save_to_db(filename, full_text, segments_list):
     try:
         conn = sqlite3.connect(CONFIG["DB_PATH"])
         cursor = conn.cursor()
+        # 这里的 segments_list 现在包含了后端返回的 'spk' 字段
+        # json.dumps 会自动把它存入数据库，无需修改表结构
         segments_json = json.dumps(segments_list, ensure_ascii=False)
         cursor.execute(
             "INSERT INTO transcriptions (filename, full_text, segments_json) VALUES (?, ?, ?)",
@@ -65,6 +74,7 @@ def notify_n8n(status, filename, details):
 
 def convert_m4a_to_wav(m4a_path, wav_path):
     FFMPEG_PATH = "/usr/local/bin/ffmpeg"
+    # 转换为 16k 采样率单声道，符合 FunASR 最佳实践
     command = [FFMPEG_PATH, '-i', m4a_path, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wav_path, '-y']
     try:
         subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -73,12 +83,31 @@ def convert_m4a_to_wav(m4a_path, wav_path):
         print(f"  [Convert Error] {e}")
         return False
 
-def save_transcript(text, txt_path):
+def save_transcript_with_spk(full_text, segments, txt_path):
+    """保存带有声纹和时间戳的 TXT 文件"""
     try:
+        content_lines = []
+        
+        # 1. 先写入全文摘要
+        content_lines.append(f"=== 全文摘要 ===\n{full_text}\n")
+        content_lines.append("=== 对话记录 (按说话人) ===")
+        
+        # 2. 写入带声纹的分段对话
+        for seg in segments:
+            start_str = format_time(seg.get('start', 0))
+            spk_id = seg.get('spk', 0) # 获取声纹ID
+            text = seg.get('text', '').strip()
+            
+            # 格式: [00:05:12] [Speaker 0]: 这里的饭很好吃
+            line = f"[{start_str}] [Speaker {spk_id}]: {text}"
+            content_lines.append(line)
+            
         with open(txt_path, 'w', encoding='utf-8') as f:
-            f.write(text)
+            f.write("\n\n".join(content_lines))
+            
         return True
-    except:
+    except Exception as e:
+        print(f"  [Save TXT Error] {e}")
         return False
 
 def transcribe_wav(wav_path):
@@ -86,7 +115,8 @@ def transcribe_wav(wav_path):
     try:
         with open(wav_path, 'rb') as f:
             files = {'audio_file': (os.path.basename(wav_path), f, 'audio/wav')}
-            response = requests.post(url, files=files, timeout=600) 
+            # 【修改】超时时间增加到 1800s (30分钟)，因为声纹识别会增加耗时
+            response = requests.post(url, files=files, timeout=1800) 
         response.raise_for_status() 
         data = response.json()
         if data.get("full_text") is not None:
@@ -132,7 +162,10 @@ def process_one_loop():
                 if seg.get("text", "").strip():
                     filtered_segments.append(seg)
 
-            save_transcript(full_text, txt_path)
+            # 【修改】调用新的带声纹保存函数
+            save_transcript_with_spk(full_text, filtered_segments, txt_path)
+            
+            # 保存到数据库 (segments 中已包含 spk 字段)
             if not save_to_db(filename, full_text, filtered_segments): continue
 
             os.rename(m4a_path, processed_m4a_path)
@@ -148,7 +181,7 @@ def process_one_loop():
     return processed_count
 
 def main():
-    print("--- 启动实时监控模式 (Real-time Monitor) ---")
+    print("--- 启动实时监控模式 (含声纹支持) ---")
     init_db()
     os.makedirs(CONFIG["TRANSCRIPT_DIR"], exist_ok=True)
     os.makedirs(CONFIG["PROCESSED_DIR"], exist_ok=True)
@@ -159,7 +192,7 @@ def main():
             # 运行处理逻辑
             process_one_loop()
             
-            # 休息 3 秒钟再看 (您可以把这个数字改得更小)
+            # 休息 3 秒钟再看
             time.sleep(3) 
             
         except KeyboardInterrupt:
