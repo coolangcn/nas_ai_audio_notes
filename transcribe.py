@@ -126,8 +126,14 @@ def process_one_loop():
             full_text = result_data["full_text"]
             segments = result_data["segments"]
 
+            # 过滤掉空文本的片段
+            filtered_segments = []
+            for seg in segments:
+                if seg.get("text", "").strip():
+                    filtered_segments.append(seg)
+
             save_transcript(full_text, txt_path)
-            if not save_to_db(filename, full_text, segments): continue
+            if not save_to_db(filename, full_text, filtered_segments): continue
 
             os.rename(aac_path, processed_aac_path)
             print(f"  [完成] 已归档。")

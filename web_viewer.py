@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import os
+import re
 import sqlite3
 import json
 from flask import Flask, render_template_string, jsonify
 from collections import defaultdict
 import datetime
-import os
 import requests
 import subprocess
 
@@ -76,6 +77,8 @@ def get_transcripts():
             data = dict(row)
             try:
                 data['segments'] = json.loads(data['segments_json'])
+                # 过滤掉空文本的片段
+                data['segments'] = [seg for seg in data['segments'] if seg.get('text', '').strip()]
             except:
                 data['segments'] = []
             
@@ -84,14 +87,37 @@ def get_transcripts():
                 # 模拟声纹ID (目前后端未支持，暂时全部设为 0)
                 seg['spk_id'] = seg.get('spk', 0) 
             
-            try:
-                dt = datetime.datetime.fromisoformat(data['created_at'])
+            # 优先从文件名解析时间
+            filename = data['filename']
+            dt = None
+            # 匹配文件名格式：YYYY-MM-DD_HH-MM-SS.aac
+            time_pattern = r'^\s*(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2}-\d{2})\s*'
+            match = re.match(time_pattern, os.path.splitext(filename)[0])
+            if match:
+                # 组合日期和时间
+                date_part = match.group(1)
+                time_part = match.group(2)
+                # 转换为datetime对象
+                try:
+                    dt_str = f"{date_part} {time_part.replace('-', ':')}"
+                    dt = datetime.datetime.strptime(dt_str, '%Y-%m-%d %H:%M:%S')
+                except ValueError:
+                    pass
+
+            # 如果文件名解析失败，使用数据库的created_at
+            if dt is None:
+                try:
+                    dt = datetime.datetime.fromisoformat(data['created_at'])
+                except:
+                    pass
+
+            if dt is not None:
                 now = datetime.datetime.now()
                 data['is_new'] = (now - dt).total_seconds() < 300
                 data['date_group'] = dt.strftime('%Y-%m-%d')
                 data['time_simple'] = dt.strftime('%H:%M') # 简单时间 14:30
                 data['time_full'] = dt.strftime('%Y-%m-%d %H:%M:%S')
-            except:
+            else:
                 data['is_new'] = False
                 data['date_group'] = "Unknown"
                 data['time_simple'] = ""
