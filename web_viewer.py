@@ -468,9 +468,13 @@ HTML_TEMPLATE = """
                         let spkName = typeof spkId === 'number' ? `说话人 ${spkId}` : spkId;
                         let avatarIdx = getAvatarIndex(spkId);
                         
+                        // 截取名字的第一个字作为头像文字
+                        let iconText = spkName;
+                        if(iconText.length > 0) iconText = iconText.slice(0, 1);
+
                         html += `
                             <div class="chat-bubble-row">
-                                <div class="avatar avatar-${avatarIdx % 10}">User</div>
+                                <div class="avatar avatar-${avatarIdx % 10}">${iconText}</div>
                                 <div class="bubble-content">
                                     <div class="speaker-name">${spkName}</div>
                                     <div class="bubble">${txt}</div>
@@ -481,9 +485,17 @@ HTML_TEMPLATE = """
                     });
                 } else {
                     const txt = cleanText(item.full_text);
+                    // 截取名字的第一个字作为头像文字
+                    let iconText = "未知"; // Default for full_text without speaker
+                    if (item.speaker_stats && Object.keys(item.speaker_stats).length > 0) {
+                        const firstSpkId = Object.keys(item.speaker_stats)[0];
+                        const firstSpkName = item.speaker_stats[firstSpkId].speaker_name;
+                        if (firstSpkName.length > 0) iconText = firstSpkName.slice(0, 1);
+                    }
+                    let avatarIdx = getAvatarIndex(0); // Default avatar for full_text
                     html += `
                         <div class="chat-bubble-row">
-                             <div class="avatar avatar-0">User</div>
+                             <div class="avatar avatar-${avatarIdx % 10}">${iconText}</div>
                              <div class="bubble-content">
                                 <div class="bubble">${txt}</div>
                                 <div class="chat-time">来源时间: ${item.time_simple}</div>
@@ -532,12 +544,9 @@ HTML_TEMPLATE = """
                 const filesCount = stats.filesParticipated.size;
                 const avatarIdx = getAvatarIndex(stats.original_id);
                 
-                let iconText = "";
-                if (typeof stats.original_id === 'number') {
-                    iconText = stats.original_id;
-                } else {
-                    iconText = stats.name.slice(-1);
-                }
+                // 截取名字的第一个字作为头像文字
+                let iconText = stats.name;
+                if(iconText.length > 0) iconText = iconText.slice(0, 1);
                 
                 html += `
                     <div class="speaker-card">
