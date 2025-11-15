@@ -18,7 +18,6 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_DB_PATH = "/volume2/download/records/Sony-2/transcripts.db"
 DEFAULT_SOURCE_DIR = "/volume2/download/records/Sony-2"
 DEFAULT_ASR_API_URL = "http://192.168.1.111:5000/transcribe"
-# 将日志文件路径与脚本目录关联
 DEFAULT_LOG_FILE_PATH = os.path.join(SCRIPT_DIR, "transcribe.log")
 DEFAULT_WEB_PORT = 5009 
 
@@ -44,7 +43,6 @@ def update_config(args):
         base_path = args.source_path
         CONFIG["SOURCE_DIR"] = base_path
         CONFIG["DB_PATH"] = os.path.join(base_path, "transcripts.db")
-        CONFIG["PROCESSED_DIR"] = os.path.join(base_path, "processed") # 假设结构一致
         print(f"[配置] 使用自定义源路径: {base_path}")
     
     if args.port:
@@ -55,10 +53,13 @@ def update_config(args):
 app = Flask(__name__)
 
 def format_timestamp(milliseconds):
-    seconds = milliseconds / 1000
-    m, s = divmod(seconds, 60)
-    h, m = divmod(m, 60)
-    return f"{int(h):02}:{int(m):02}:{s:06.3f}"
+    try:
+        seconds = milliseconds / 1000
+        m, s = divmod(seconds, 60)
+        h, m = divmod(m, 60)
+        return f"{int(h):02}:{int(m):02}:{s:06.3f}"
+    except:
+        return "00:00:00.000"
 
 def get_system_status():
     status = {
@@ -76,28 +77,43 @@ def get_system_status():
         status["asr_server"] = "offline"
 
     try:
-        files = [f for f in os.listdir(CONFIG["SOURCE_DIR"]) 
-                 if f.lower().endswith(('.m4a', '.acc', '.aac', '.mp3', '.wav', '.ogg'))]
-        status["pending_files"] = len(files)
+        if os.path.exists(CONFIG["SOURCE_DIR"]):
+            files = [f for f in os.listdir(CONFIG["SOURCE_DIR"]) 
+                     if f.lower().endswith(('.m4a', '.acc', '.aac', '.mp3', '.wav', '.ogg'))]
+            status["pending_files"] = len(files)
+        else:
+            status["pending_files"] = -1
     except:
         status["pending_files"] = -1
 
     try:
-        if os.path.exists(CONFIG["LOG_FILE_PATH"]):
-            cmd = f"tail -n 10 {CONFIG['LOG_FILE_PATH']}" 
-            result = subprocess.check_output(cmd, shell=True).decode('utf-8')
-            status["last_log"] = result
+        # 优先读取本地目录下的日志，或者配置里的日志
+        log_path = CONFIG["LOG_FILE_PATH"]
+        # 如果配置的日志不存在，尝试在当前目录找
+        if not os.path.exists(log_path):
+             log_path = "transcribe.log"
+
+        if os.path.exists(log_path):
+            # 读取最后 20 行
+            try:
+                # 使用 tail 命令 (Linux/Mac)
+                cmd = f"tail -n 20 {log_path}" 
+                result = subprocess.check_output(cmd, shell=True).decode('utf-8')
+                status["last_log"] = result
+            except:
+                # Windows 兼容或者是读文件失败，用 Python 读取
+                with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    lines = f.readlines()
+                    status["last_log"] = "".join(lines[-20:])
         else:
-            status["last_log"] = f"找不到日志文件: {CONFIG['LOG_FILE_PATH']}"
+            status["last_log"] = f"找不到日志文件: {log_path}"
     except Exception as e:
         status["last_log"] = f"读取日志失败: {e}"
 
     return status
 
 def get_transcripts():
-    print(f"Attempting to read database from: {CONFIG['DB_PATH']}")
     if not os.path.exists(CONFIG["DB_PATH"]):
-        print(f"Database file not found at: {CONFIG['DB_PATH']}")
         return []
     try:
         db = sqlite3.connect(CONFIG["DB_PATH"])
@@ -117,7 +133,8 @@ def get_transcripts():
                 data['segments'] = []
             
             for seg in data['segments']:
-                seg['start_fmt'] = format_timestamp(seg['start'])
+                seg['start_fmt'] = format_timestamp(seg.get('start', 0))
+                # 兼容后端传来的 spk 字段 (可能是数字，可能是字符串"爸爸")
                 seg['spk_id'] = seg.get('spk', 0) 
             
             # 解析时间
@@ -162,8 +179,7 @@ def get_transcripts():
                 data['time_full'] = ""
             results.append(data)
         return results
-    except Exception as e:
-        print(f"[Error] Failed to get transcripts: {e}")
+    except:
         return []
 
 # --- HTML 模板 ---
@@ -297,13 +313,17 @@ HTML_TEMPLATE = """
             return text.replace(/<\|.*?\|>/g, "");
         }
 
-        // 2. 获取头像颜色索引 (支持字符串ID)
+        // 2. 获取头像颜色索引 (支持字符串ID，如"爸爸")
         function getAvatarIndex(spkId) {
             if (typeof spkId === 'number') return spkId;
             if (!spkId) return 0;
+            
+            // 字符串哈希算法
             let hash = 0;
             const str = String(spkId);
-            for (let i = 0; i < str.length; i++) hash += str.charCodeAt(i);
+            for (let i = 0; i < str.length; i++) {
+                hash = str.charCodeAt(i) + ((hash << 5) - hash);
+            }
             return Math.abs(hash);
         }
 
@@ -320,15 +340,21 @@ HTML_TEMPLATE = """
                         const spkId = seg.spk_id !== undefined ? seg.spk_id : 'unknown';
                         const spkName = typeof seg.spk_id === 'number' ? `说话人 ${seg.spk_id}` : (seg.spk_id || "未知");
                         
-                        if (!stats[spkId]) {
-                            stats[spkId] = {
+                        // 确保 key 是字符串，但我们在内部处理时知道它是谁
+                        const key = String(spkId); 
+
+                        if (!stats[key]) {
+                            stats[key] = {
+                                original_id: spkId,
                                 speaker_name: spkName,
                                 count: 0,
                                 total_duration: 0
                             };
                         }
-                        stats[spkId].count += 1;
-                        stats[spkId].total_duration += (seg.end - seg.start);
+                        stats[key].count += 1;
+                        // 容错：如果 start 或 end 缺失
+                        const dur = (seg.end && seg.start) ? (seg.end - seg.start) : 0;
+                        stats[key].total_duration += dur;
                     });
                 }
                 item.speaker_stats = stats;
@@ -429,9 +455,6 @@ HTML_TEMPLATE = """
                         
                         
 
-[Image of mobile chat interface]
-
-
                         html += `
                             <div class="chat-bubble-row">
                                 <div class="avatar avatar-${avatarIdx % 10}">User</div>
@@ -465,27 +488,20 @@ HTML_TEMPLATE = """
             
             items.forEach(item => {
                 if (item.speaker_stats) {
-                    for (const [spkId, stats] of Object.entries(item.speaker_stats)) {
-                        // 这里的 spkId 是 key (string)
-                        // 如果原始数据是数字ID (0, 1), key 会是 "0", "1"
-                        // 如果原始数据是 "爸爸", key 就是 "爸爸"
-                        // 我们需要保持 "爸爸" 这种字符串形式
+                    for (const [key, stats] of Object.entries(item.speaker_stats)) {
                         
-                        let originalId = spkId;
-                        if (!isNaN(spkId)) originalId = parseInt(spkId);
-
-                        if (!globalSpeakerStats[spkId]) {
-                            globalSpeakerStats[spkId] = {
-                                id: originalId,
+                        if (!globalSpeakerStats[key]) {
+                            globalSpeakerStats[key] = {
+                                original_id: stats.original_id,
                                 name: stats.speaker_name,
                                 totalCount: 0,
                                 totalDuration: 0,
                                 filesParticipated: new Set()
                             };
                         }
-                        globalSpeakerStats[spkId].totalCount += stats.count;
-                        globalSpeakerStats[spkId].totalDuration += stats.total_duration;
-                        globalSpeakerStats[spkId].filesParticipated.add(item.filename);
+                        globalSpeakerStats[key].totalCount += stats.count;
+                        globalSpeakerStats[key].totalDuration += stats.total_duration;
+                        globalSpeakerStats[key].filesParticipated.add(item.filename);
                     }
                 }
             });
@@ -505,11 +521,15 @@ HTML_TEMPLATE = """
             for (const stats of sortedStats) {
                 const avgDuration = stats.totalCount > 0 ? (stats.totalDuration / stats.totalCount / 1000).toFixed(1) : 0;
                 const filesCount = stats.filesParticipated.size;
-                const avatarIdx = getAvatarIndex(stats.id);
+                const avatarIdx = getAvatarIndex(stats.original_id);
                 
-                // 截取名字的最后一个字作为头像文字
-                let iconText = stats.name;
-                if(iconText.length > 0) iconText = iconText.slice(-1);
+                // 截取名字的最后一个字作为头像文字 (如果是数字ID，就显示数字)
+                let iconText = "";
+                if (typeof stats.original_id === 'number') {
+                    iconText = stats.original_id;
+                } else {
+                    iconText = stats.name.slice(-1);
+                }
                 
                 html += `
                     <div class="speaker-card">

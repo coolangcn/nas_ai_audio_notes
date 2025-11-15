@@ -24,7 +24,7 @@ DEFAULT_CONFIG = {
 # 全局配置变量
 CONFIG = DEFAULT_CONFIG.copy()
 
-# 支持的音频扩展名 (新增 mp3, ogg, wav, flac)
+# 支持的音频扩展名
 SUPPORTED_EXTENSIONS = ('.m4a', '.acc', '.aac', '.mp3', '.wav', '.ogg', '.flac')
 
 def parse_args():
@@ -109,14 +109,33 @@ def notify_n8n(status, filename, details):
         pass
 
 def convert_audio_to_wav(audio_path, wav_path):
-    """使用 ffmpeg 转换音频"""
+    """使用 ffmpeg 转换音频 (增强版)"""
     FFMPEG_PATH = "/usr/local/bin/ffmpeg"
-    # 转换为 16k 采样率单声道，符合 FunASR 最佳实践
-    # -vn: 禁用视频流 (防止误传视频文件)
-    command = [FFMPEG_PATH, '-vn', '-i', audio_path, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wav_path, '-y']
+    
+    # 优化参数：
+    # -map 0:a : 只提取第一个音频流 (防止 m4a 封面图被当成视频流报错)
+    # -ac 1    : 强制转为单声道 (ASR 模型通常需要单声道)
+    command = [
+        FFMPEG_PATH, 
+        '-y', 
+        '-i', audio_path, 
+        '-vn',         # 禁用视频
+        '-map', '0:a', # 明确映射音频流
+        '-ar', '16000', 
+        '-ac', '1',    # 强制单声道
+        '-c:a', 'pcm_s16le', 
+        wav_path
+    ]
+    
     try:
+        # capture_output=True 用于捕获错误日志，check=True 遇到错误抛出异常
         subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         return True
+    except subprocess.CalledProcessError as e:
+        # 打印 stderr 以便调试 ffmpeg 错误
+        error_msg = e.stderr.decode().strip() if e.stderr else "Unknown error"
+        print(f"  [Convert Error] ffmpeg 转换失败: {error_msg[:200]}...") # 只打印前200字符
+        return False
     except Exception as e:
         print(f"  [Convert Error] {e}")
         return False
@@ -126,7 +145,7 @@ def save_transcript_with_spk(full_text, segments, txt_path):
     try:
         content_lines = []
         
-        # 1. 先写入全文摘要 (清洗过的纯文本)
+        # 1. 先写入全文摘要
         clean_full_text = clean_sensevoice_tags(full_text)
         content_lines.append(f"=== 全文摘要 ===\n{clean_full_text}\n")
         content_lines.append("=== 对话记录 (按说话人) ===")
@@ -135,16 +154,14 @@ def save_transcript_with_spk(full_text, segments, txt_path):
         for seg in segments:
             start_str = format_time(seg.get('start', 0))
             
-            # 处理 spk 字段：可能是数字(0)，也可能是名字("爸爸")，也可能是 None
             spk_raw = seg.get('spk')
             if spk_raw is None:
                 spk_label = "Unknown"
             elif isinstance(spk_raw, int):
                 spk_label = f"Speaker {spk_raw}"
             else:
-                spk_label = str(spk_raw) # 直接显示名字
+                spk_label = str(spk_raw)
             
-            # 清洗文本
             text = clean_sensevoice_tags(seg.get('text', ''))
             if not text.strip(): continue
 
@@ -162,33 +179,45 @@ def save_transcript_with_spk(full_text, segments, txt_path):
 
 def transcribe_wav(wav_path):
     url = CONFIG["ASR_HTTP_URL"]
-    try:
-        with open(wav_path, 'rb') as f:
-            files = {'audio_file': (os.path.basename(wav_path), f, 'audio/wav')}
+    max_retries = 3 # 最大重试次数
+    
+    for attempt in range(max_retries):
+        try:
+            with open(wav_path, 'rb') as f:
+                files = {'audio_file': (os.path.basename(wav_path), f, 'audio/wav')}
+                
+                if attempt > 0:
+                    print(f"  网络波动，正在重试 ({attempt+1}/{max_retries})...")
+                else:
+                    print(f"  正在上传并等待转录结果 (超时: 3600s)...")
+                
+                response = requests.post(url, files=files, timeout=3600) 
             
-            # 【修改】超时时间增加到 3600s (1小时)
-            # 旗舰版模型处理长录音 + 声纹比对可能非常耗时，宁可多等也不要断开
-            print(f"  正在上传并等待转录结果 (超时设定: 3600秒)...")
-            response = requests.post(url, files=files, timeout=3600) 
+            response.raise_for_status() 
+            data = response.json()
             
-        response.raise_for_status() 
-        data = response.json()
-        
-        if "error" in data:
-            print(f"  [Server Error] {data['error']}")
+            if "error" in data:
+                print(f"  [Server Error] {data['error']}")
+                return None
+                
+            if data.get("full_text") is not None:
+                return data
+            else:
+                print(f"  [API Error] {data}")
+                return None
+
+        except requests.exceptions.Timeout:
+            print(f"  [Timeout] 请求超时，服务端仍在处理。")
+            return None # 超时不重试，避免重复提交大文件
+        except requests.exceptions.ConnectionError:
+            print(f"  [Connection Error] 无法连接服务端，等待 5秒 后重试...")
+            time.sleep(5)
+        except Exception as e:
+            print(f"  [Request Error] {e}")
             return None
             
-        if data.get("full_text") is not None:
-            return data
-        else:
-            print(f"  [API Error] {data}")
-            return None
-    except requests.exceptions.Timeout:
-        print(f"  [Timeout] 请求超时，服务端仍在处理或已崩溃")
-        return None
-    except Exception as e:
-        print(f"  [Request Error] {e}")
-        return None
+    print("  [Failed] 重试次数耗尽，跳过此文件")
+    return None
 
 def process_one_loop():
     """执行一次扫描处理"""
@@ -198,7 +227,6 @@ def process_one_loop():
         print(f"源目录不存在: {CONFIG['SOURCE_DIR']}")
         return 0
 
-    # 扫描支持的文件类型
     files = [f for f in os.listdir(CONFIG["SOURCE_DIR"]) 
              if f.lower().endswith(SUPPORTED_EXTENSIONS)]
     
@@ -212,18 +240,17 @@ def process_one_loop():
         audio_path = os.path.join(CONFIG["SOURCE_DIR"], filename)
         base_name = os.path.splitext(filename)[0]
         
-        # 临时和输出文件路径
         wav_path = os.path.join(CONFIG["SOURCE_DIR"], f"{base_name}_TEMP.wav")
         txt_path = os.path.join(CONFIG["TRANSCRIPT_DIR"], f"{base_name}.txt")
         processed_audio_path = os.path.join(CONFIG["PROCESSED_DIR"], filename)
 
         try:
-            # 1. 转换格式
+            # 1. 转换
             if not convert_audio_to_wav(audio_path, wav_path): 
                 print("  转换失败，跳过")
                 continue
             
-            # 2. 调用 API
+            # 2. 转录
             result_data = transcribe_wav(wav_path) 
             if result_data is None: 
                 print("  转录失败，跳过")
@@ -232,35 +259,32 @@ def process_one_loop():
             full_text = result_data["full_text"]
             segments = result_data["segments"]
 
-            # 3. 过滤空片段
+            # 3. 过滤
             filtered_segments = []
             for seg in segments:
                 if seg.get("text", "").strip():
                     filtered_segments.append(seg)
 
-            # 4. 保存 TXT (包含声纹名)
+            # 4. 保存
             save_transcript_with_spk(full_text, filtered_segments, txt_path)
             
-            # 5. 保存 DB
             if not save_to_db(filename, full_text, filtered_segments): 
                 print("  数据库保存失败，跳过归档")
                 continue
 
-            # 6. 移动归档 (覆盖同名文件)
+            # 5. 归档
             if os.path.exists(processed_audio_path):
                 os.remove(processed_audio_path)
             os.rename(audio_path, processed_audio_path)
             
             print(f"  [完成] 已归档 -> {processed_audio_path}")
             
-            # 7. 通知
             notify_n8n("success", filename, full_text[:100])
             processed_count += 1
 
         except Exception as e:
             print(f"  [异常] {e}")
         finally:
-            # 清理临时 wav
             if os.path.exists(wav_path): 
                 try: os.remove(wav_path)
                 except: pass
