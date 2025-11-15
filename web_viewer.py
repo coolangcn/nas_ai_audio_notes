@@ -6,7 +6,6 @@ import re
 import sqlite3
 import json
 from flask import Flask, render_template_string, jsonify
-from collections import defaultdict
 import datetime
 import requests
 import subprocess
@@ -20,27 +19,33 @@ DEFAULT_LOG_FILE_PATH = "/volume1/docker/scripts/nas_ai_audio_notes/transcribe.l
 DEFAULT_WEB_PORT = 5009 
 
 # 全局配置变量
-DB_PATH = DEFAULT_DB_PATH
-SOURCE_DIR = DEFAULT_SOURCE_DIR
-ASR_API_URL = DEFAULT_ASR_API_URL
-LOG_FILE_PATH = DEFAULT_LOG_FILE_PATH
-WEB_PORT = DEFAULT_WEB_PORT
+CONFIG = {
+    "DB_PATH": DEFAULT_DB_PATH,
+    "SOURCE_DIR": DEFAULT_SOURCE_DIR,
+    "ASR_API_URL": DEFAULT_ASR_API_URL,
+    "LOG_FILE_PATH": DEFAULT_LOG_FILE_PATH,
+    "WEB_PORT": DEFAULT_WEB_PORT
+}
 
 def parse_args():
     """解析命令行参数"""
     parser = argparse.ArgumentParser(description='Web查看器脚本')
     parser.add_argument('--source-path', type=str, help='源音频文件路径')
+    parser.add_argument('--port', type=int, help='Web端口', default=DEFAULT_WEB_PORT)
     return parser.parse_args()
 
 def update_config(args):
     """根据命令行参数更新配置"""
-    global DB_PATH, SOURCE_DIR
     if args.source_path:
-        # 更新所有相关路径
         base_path = args.source_path
-        SOURCE_DIR = base_path
-        DB_PATH = os.path.join(base_path, "transcripts.db")
+        CONFIG["SOURCE_DIR"] = base_path
+        CONFIG["DB_PATH"] = os.path.join(base_path, "transcripts.db")
+        CONFIG["PROCESSED_DIR"] = os.path.join(base_path, "processed") # 假设结构一致
         print(f"[配置] 使用自定义源路径: {base_path}")
+    
+    if args.port:
+        CONFIG["WEB_PORT"] = args.port
+
 # -----------------
 
 app = Flask(__name__)
@@ -59,7 +64,7 @@ def get_system_status():
     }
     try:
         try:
-            requests.get(ASR_API_URL.replace("/transcribe", "/"), timeout=1)
+            requests.get(CONFIG["ASR_API_URL"].replace("/transcribe", "/"), timeout=1)
             status["asr_server"] = "online"
         except requests.exceptions.RequestException:
              status["asr_server"] = "online"
@@ -67,29 +72,29 @@ def get_system_status():
         status["asr_server"] = "offline"
 
     try:
-        files = [f for f in os.listdir(SOURCE_DIR) 
-                 if f.endswith(".m4a") or f.endswith(".acc") or f.endswith(".aac")]
+        files = [f for f in os.listdir(CONFIG["SOURCE_DIR"]) 
+                 if f.lower().endswith(('.m4a', '.acc', '.aac', '.mp3', '.wav', '.ogg'))]
         status["pending_files"] = len(files)
     except:
         status["pending_files"] = -1
 
     try:
-        if os.path.exists(LOG_FILE_PATH):
-            cmd = f"tail -n 10 {LOG_FILE_PATH}" # 多读几行
+        if os.path.exists(CONFIG["LOG_FILE_PATH"]):
+            cmd = f"tail -n 10 {CONFIG['LOG_FILE_PATH']}" 
             result = subprocess.check_output(cmd, shell=True).decode('utf-8')
             status["last_log"] = result
         else:
-            status["last_log"] = f"找不到日志文件: {LOG_FILE_PATH}"
+            status["last_log"] = f"找不到日志文件: {CONFIG['LOG_FILE_PATH']}"
     except Exception as e:
         status["last_log"] = f"读取日志失败: {e}"
 
     return status
 
 def get_transcripts():
-    if not os.path.exists(DB_PATH):
+    if not os.path.exists(CONFIG["DB_PATH"]):
         return []
     try:
-        db = sqlite3.connect(DB_PATH)
+        db = sqlite3.connect(CONFIG["DB_PATH"])
         db.row_factory = sqlite3.Row
         cursor = db.cursor()
         # 获取最近 100 条记录
@@ -107,15 +112,14 @@ def get_transcripts():
             
             for seg in data['segments']:
                 seg['start_fmt'] = format_timestamp(seg['start'])
-                # 兼容后端传来的 spk 字段
                 seg['spk_id'] = seg.get('spk', 0) 
             
-            # 优先从文件名解析时间
+            # 解析时间
             filename = data['filename']
             dt = None
             time_patterns = [
-                r'^\s*(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2}-\d{2})\s*',  # 原始格式
-                r'^\s*recording-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})\s*'  # 新格式
+                r'^\s*(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2}-\d{2})\s*', 
+                r'^\s*recording-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})\s*' 
             ]
             
             for pattern in time_patterns:
@@ -136,10 +140,8 @@ def get_transcripts():
                         continue 
                         
             if dt is None:
-                try:
-                    dt = datetime.datetime.fromisoformat(data['created_at'])
-                except:
-                    pass
+                try: dt = datetime.datetime.fromisoformat(data['created_at'])
+                except: pass
 
             if dt is not None:
                 now = datetime.datetime.now()
@@ -272,32 +274,43 @@ HTML_TEMPLATE = """
         function switchTab(tabName) {
             document.querySelectorAll('.view-container').forEach(el => el.classList.remove('active'));
             document.querySelectorAll('.nav-btn').forEach(el => el.classList.remove('active'));
-            
             document.getElementById('view-' + tabName).classList.add('active');
             
-            // 简单处理按钮激活状态
             const btns = document.querySelectorAll('.nav-btn');
             if(tabName === 'dashboard') btns[0].classList.add('active');
             else if(tabName === 'chat') btns[1].classList.add('active');
             else if(tabName === 'analysis') btns[2].classList.add('active');
         }
         
-        // 辅助函数：获取头像颜色索引
+        // --- 关键辅助函数 ---
+
+        // 1. 文本清洗：去除 SenseVoice 的标签 (<|zh|>, <|happy|>)
+        function cleanText(text) {
+            if (!text) return "";
+            return text.replace(/<\|.*?\|>/g, "");
+        }
+
+        // 2. 获取头像颜色索引 (支持字符串ID)
         function getAvatarIndex(spkId) {
             if (typeof spkId === 'number') return spkId;
+            if (!spkId) return 0;
             let hash = 0;
-            for (let i = 0; i < spkId.length; i++) hash += spkId.charCodeAt(i);
+            const str = String(spkId);
+            for (let i = 0; i < str.length; i++) hash += str.charCodeAt(i);
             return Math.abs(hash);
         }
 
-        // 辅助函数：从原始 segments 计算统计数据
+        // 3. 预处理统计数据
         function processStats(items) {
             items.forEach(item => {
                 const stats = {};
                 if (item.segments && item.segments.length > 0) {
                     item.segments.forEach(seg => {
+                        // 清洗文本用于统计
+                        const clean = cleanText(seg.text);
+                        if (!clean.trim()) return;
+
                         const spkId = seg.spk_id !== undefined ? seg.spk_id : 'unknown';
-                        // 如果是数字ID，转成 "说话人 X"；如果是名字，直接用
                         const spkName = typeof seg.spk_id === 'number' ? `说话人 ${seg.spk_id}` : (seg.spk_id || "未知");
                         
                         if (!stats[spkId]) {
@@ -308,7 +321,6 @@ HTML_TEMPLATE = """
                             };
                         }
                         stats[spkId].count += 1;
-                        // 简单计算时长：结束时间 - 开始时间
                         stats[spkId].total_duration += (seg.end - seg.start);
                     });
                 }
@@ -322,7 +334,6 @@ HTML_TEMPLATE = """
                 // 1. 状态更新
                 const statusRes = await fetch('/api/status');
                 const statusData = await statusRes.json();
-                
                 const asrBadge = document.getElementById('status-asr');
                 if (statusData.asr_server === 'online') {
                     asrBadge.innerText = "在线"; asrBadge.className = "badge bg-green";
@@ -338,17 +349,14 @@ HTML_TEMPLATE = """
                 const dataRes = await fetch('/api/data');
                 let items = await dataRes.json();
                 
-                // === 预处理统计数据 ===
+                // 计算统计
                 items = processStats(items);
-                // ==================
                 
-                // 指纹检测
                 if (items.length === 0) return;
                 const currentFingerprint = items.length + "_" + items[0].id;
                 if (currentFingerprint === lastDataFingerprint) return;
                 lastDataFingerprint = currentFingerprint;
 
-                // 渲染三个视图
                 renderDashboard(items);
                 renderChat(items);
                 renderAnalysis(items);
@@ -363,13 +371,15 @@ HTML_TEMPLATE = """
                 let segHtml = "";
                 if (item.segments && item.segments.length > 0) {
                     item.segments.forEach(seg => {
-                        if (!seg.text || seg.text.trim() === "") return;
-                        segHtml += `<div class="segment"><span class="timestamp">[${seg.start_fmt}]</span><span>${seg.text}</span></div>`;
+                        const txt = cleanText(seg.text);
+                        if (!txt.trim()) return;
+                        segHtml += `<div class="segment"><span class="timestamp">[${seg.start_fmt}]</span><span>${txt}</span></div>`;
                     });
                 } else {
-                    if (item.full_text) segHtml = `<div class="segment"><span>${item.full_text}</span></div>`;
+                    const txt = cleanText(item.full_text);
+                    if (txt) segHtml = `<div class="segment"><span>${txt}</span></div>`;
                 }
-                if (!segHtml) return; // 空卡片不显示
+                if (!segHtml) return;
 
                 html += `
                     <div class="transcript-card ${item.is_new ? 'new-item' : ''}">
@@ -389,8 +399,8 @@ HTML_TEMPLATE = """
                 // 预检内容
                 let hasContent = false;
                 if (item.segments && item.segments.length > 0) {
-                    hasContent = item.segments.some(seg => seg.text && seg.text.trim() !== "");
-                } else if (item.full_text && item.full_text.trim() !== "") {
+                    hasContent = item.segments.some(seg => cleanText(seg.text).trim() !== "");
+                } else if (cleanText(item.full_text).trim() !== "") {
                     hasContent = true;
                 }
                 if (!hasContent) return;
@@ -403,30 +413,36 @@ HTML_TEMPLATE = """
 
                 if (item.segments && item.segments.length > 0) {
                     item.segments.forEach(seg => {
-                        if (!seg.text || seg.text.trim() === "") return;
+                        const txt = cleanText(seg.text);
+                        if (!txt.trim()) return;
                         
                         const spkId = seg.spk_id !== undefined ? seg.spk_id : 0;
                         let spkName = typeof spkId === 'number' ? `说话人 ${spkId}` : spkId;
                         let avatarIdx = getAvatarIndex(spkId);
-                        const timeDisplay = `<div class="chat-time">${seg.start_fmt}</div>`;
+                        
+                        
+
+[Image of mobile chat interface]
+
 
                         html += `
                             <div class="chat-bubble-row">
                                 <div class="avatar avatar-${avatarIdx % 10}">User</div>
                                 <div class="bubble-content">
                                     <div class="speaker-name">${spkName}</div>
-                                    <div class="bubble">${seg.text}</div>
-                                    ${timeDisplay}
+                                    <div class="bubble">${txt}</div>
+                                    <div class="chat-time">${seg.start_fmt}</div>
                                 </div>
                             </div>
                         `;
                     });
                 } else {
+                    const txt = cleanText(item.full_text);
                     html += `
                         <div class="chat-bubble-row">
                              <div class="avatar avatar-0">User</div>
                              <div class="bubble-content">
-                                <div class="bubble">${item.full_text}</div>
+                                <div class="bubble">${txt}</div>
                                 <div class="chat-time">来源时间: ${item.time_simple}</div>
                              </div>
                         </div>`;
@@ -443,13 +459,17 @@ HTML_TEMPLATE = """
             items.forEach(item => {
                 if (item.speaker_stats) {
                     for (const [spkId, stats] of Object.entries(item.speaker_stats)) {
-                        // 这里的 spkId 是字典键，总是字符串类型，需要转回原始类型判断
-                        let originalSpkId = spkId;
-                        if (!isNaN(spkId)) originalSpkId = parseInt(spkId);
+                        // 这里的 spkId 是 key (string)
+                        // 如果原始数据是数字ID (0, 1), key 会是 "0", "1"
+                        // 如果原始数据是 "爸爸", key 就是 "爸爸"
+                        // 我们需要保持 "爸爸" 这种字符串形式
+                        
+                        let originalId = spkId;
+                        if (!isNaN(spkId)) originalId = parseInt(spkId);
 
                         if (!globalSpeakerStats[spkId]) {
                             globalSpeakerStats[spkId] = {
-                                id: originalSpkId,
+                                id: originalId,
                                 name: stats.speaker_name,
                                 totalCount: 0,
                                 totalDuration: 0,
@@ -463,6 +483,8 @@ HTML_TEMPLATE = """
                 }
             });
             
+            
+
             let html = `
                 <div class="analysis-card">
                     <h3>📊 声纹识别统计分析</h3>
@@ -470,15 +492,22 @@ HTML_TEMPLATE = """
                 </div>
                 <div class="speaker-grid">`;
             
-            for (const [key, stats] of Object.entries(globalSpeakerStats)) {
+            // 排序：按发言次数从多到少
+            const sortedStats = Object.values(globalSpeakerStats).sort((a, b) => b.totalCount - a.totalCount);
+
+            for (const stats of sortedStats) {
                 const avgDuration = stats.totalCount > 0 ? (stats.totalDuration / stats.totalCount / 1000).toFixed(1) : 0;
                 const filesCount = stats.filesParticipated.size;
                 const avatarIdx = getAvatarIndex(stats.id);
                 
+                // 截取名字的最后一个字作为头像文字
+                let iconText = stats.name;
+                if(iconText.length > 0) iconText = iconText.slice(-1);
+                
                 html += `
                     <div class="speaker-card">
                         <div class="speaker-icon avatar-${avatarIdx % 10}">
-                            ${stats.name.slice(-1)}
+                            ${iconText}
                         </div>
                         <div class="speaker-info">
                             <h4>${stats.name}</h4>
@@ -515,10 +544,6 @@ def index():
     return render_template_string(HTML_TEMPLATE)
 
 if __name__ == "__main__":
-    # 解析命令行参数
     args = parse_args()
-    
-    # 根据命令行参数更新配置
     update_config(args)
-    
-    app.run(host='0.0.0.0', port=WEB_PORT, debug=False)
+    app.run(host='0.0.0.0', port=CONFIG["WEB_PORT"], debug=False)

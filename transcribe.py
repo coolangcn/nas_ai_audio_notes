@@ -9,6 +9,7 @@ import datetime
 import sqlite3
 import time
 import argparse
+import re
 
 # --- 配置 ---
 DEFAULT_CONFIG = {
@@ -23,6 +24,9 @@ DEFAULT_CONFIG = {
 # 全局配置变量
 CONFIG = DEFAULT_CONFIG.copy()
 
+# 支持的音频扩展名 (新增 mp3, ogg, wav, flac)
+SUPPORTED_EXTENSIONS = ('.m4a', '.acc', '.aac', '.mp3', '.wav', '.ogg', '.flac')
+
 def parse_args():
     """解析命令行参数"""
     parser = argparse.ArgumentParser(description='音频转录脚本')
@@ -33,13 +37,13 @@ def update_config(args):
     """根据命令行参数更新配置"""
     global CONFIG
     if args.source_path:
-        # 更新所有相关路径
         base_path = args.source_path
         CONFIG["SOURCE_DIR"] = base_path
         CONFIG["TRANSCRIPT_DIR"] = os.path.join(base_path, "transcripts")
         CONFIG["PROCESSED_DIR"] = os.path.join(base_path, "processed")
         CONFIG["DB_PATH"] = os.path.join(base_path, "transcripts.db")
         print(f"[配置] 使用自定义源路径: {base_path}")
+
 # ---------------------------------------------
 
 def format_time(ms):
@@ -48,6 +52,13 @@ def format_time(ms):
     m, s = divmod(seconds, 60)
     h, m = divmod(m, 60)
     return f"{int(h):02}:{int(m):02}:{int(s):02}"
+
+def clean_sensevoice_tags(text):
+    """清洗 SenseVoice 可能残留的特殊标签"""
+    if not text: return ""
+    # 移除 <|zh|>, <|happy|>, <|speech|> 等标签
+    cleaned = re.sub(r'<\|.*?\|>', '', text)
+    return cleaned.strip()
 
 def init_db():
     try:
@@ -71,8 +82,6 @@ def save_to_db(filename, full_text, segments_list):
     try:
         conn = sqlite3.connect(CONFIG["DB_PATH"])
         cursor = conn.cursor()
-        # 这里的 segments_list 现在包含了后端返回的 'spk' 字段
-        # json.dumps 会自动把它存入数据库，无需修改表结构
         segments_json = json.dumps(segments_list, ensure_ascii=False)
         cursor.execute(
             "INSERT INTO transcriptions (filename, full_text, segments_json) VALUES (?, ?, ?)",
@@ -88,17 +97,23 @@ def save_to_db(filename, full_text, segments_list):
 
 def notify_n8n(status, filename, details):
     if not CONFIG["N8N_WEBHOOK_URL"]: return
-    payload = {"status": status, "filename": filename, "details": details, "timestamp": datetime.datetime.now().isoformat()}
+    payload = {
+        "status": status, 
+        "filename": filename, 
+        "details": details, 
+        "timestamp": datetime.datetime.now().isoformat()
+    }
     try:
         requests.post(CONFIG["N8N_WEBHOOK_URL"], json=payload, timeout=5)
     except:
         pass
 
 def convert_audio_to_wav(audio_path, wav_path):
-    """将音频文件转换为WAV格式，支持m4a、acc、aac格式"""
+    """使用 ffmpeg 转换音频"""
     FFMPEG_PATH = "/usr/local/bin/ffmpeg"
     # 转换为 16k 采样率单声道，符合 FunASR 最佳实践
-    command = [FFMPEG_PATH, '-i', audio_path, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wav_path, '-y']
+    # -vn: 禁用视频流 (防止误传视频文件)
+    command = [FFMPEG_PATH, '-vn', '-i', audio_path, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wav_path, '-y']
     try:
         subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         return True
@@ -111,18 +126,30 @@ def save_transcript_with_spk(full_text, segments, txt_path):
     try:
         content_lines = []
         
-        # 1. 先写入全文摘要
-        content_lines.append(f"=== 全文摘要 ===\n{full_text}\n")
+        # 1. 先写入全文摘要 (清洗过的纯文本)
+        clean_full_text = clean_sensevoice_tags(full_text)
+        content_lines.append(f"=== 全文摘要 ===\n{clean_full_text}\n")
         content_lines.append("=== 对话记录 (按说话人) ===")
         
         # 2. 写入带声纹的分段对话
         for seg in segments:
             start_str = format_time(seg.get('start', 0))
-            spk_id = seg.get('spk', 0) # 获取声纹ID
-            text = seg.get('text', '').strip()
             
-            # 格式: [00:05:12] [Speaker 0]: 这里的饭很好吃
-            line = f"[{start_str}] [Speaker {spk_id}]: {text}"
+            # 处理 spk 字段：可能是数字(0)，也可能是名字("爸爸")，也可能是 None
+            spk_raw = seg.get('spk')
+            if spk_raw is None:
+                spk_label = "Unknown"
+            elif isinstance(spk_raw, int):
+                spk_label = f"Speaker {spk_raw}"
+            else:
+                spk_label = str(spk_raw) # 直接显示名字
+            
+            # 清洗文本
+            text = clean_sensevoice_tags(seg.get('text', ''))
+            if not text.strip(): continue
+
+            # 格式: [00:05:12] [爸爸]: 今天的饭很好吃
+            line = f"[{start_str}] [{spk_label}]: {text}"
             content_lines.append(line)
             
         with open(txt_path, 'w', encoding='utf-8') as f:
@@ -138,15 +165,27 @@ def transcribe_wav(wav_path):
     try:
         with open(wav_path, 'rb') as f:
             files = {'audio_file': (os.path.basename(wav_path), f, 'audio/wav')}
-            # 【修改】超时时间增加到 1800s (30分钟)，因为声纹识别会增加耗时
-            response = requests.post(url, files=files, timeout=1800) 
+            
+            # 【修改】超时时间增加到 3600s (1小时)
+            # 旗舰版模型处理长录音 + 声纹比对可能非常耗时，宁可多等也不要断开
+            print(f"  正在上传并等待转录结果 (超时设定: 3600秒)...")
+            response = requests.post(url, files=files, timeout=3600) 
+            
         response.raise_for_status() 
         data = response.json()
+        
+        if "error" in data:
+            print(f"  [Server Error] {data['error']}")
+            return None
+            
         if data.get("full_text") is not None:
             return data
         else:
             print(f"  [API Error] {data}")
             return None
+    except requests.exceptions.Timeout:
+        print(f"  [Timeout] 请求超时，服务端仍在处理或已崩溃")
+        return None
     except Exception as e:
         print(f"  [Request Error] {e}")
         return None
@@ -154,12 +193,17 @@ def transcribe_wav(wav_path):
 def process_one_loop():
     """执行一次扫描处理"""
     processed_count = 0
-    # 检查目录里有没有 .m4a、.acc、.aac 文件
+    
+    if not os.path.exists(CONFIG["SOURCE_DIR"]):
+        print(f"源目录不存在: {CONFIG['SOURCE_DIR']}")
+        return 0
+
+    # 扫描支持的文件类型
     files = [f for f in os.listdir(CONFIG["SOURCE_DIR"]) 
-             if f.endswith(".m4a") or f.endswith(".acc") or f.endswith(".aac")]
+             if f.lower().endswith(SUPPORTED_EXTENSIONS)]
     
     if not files:
-        return 0 # 没有文件，直接返回
+        return 0 
 
     print(f"发现 {len(files)} 个新文件，开始处理...")
 
@@ -167,70 +211,83 @@ def process_one_loop():
         print(f"\n>>> 处理: {filename}")
         audio_path = os.path.join(CONFIG["SOURCE_DIR"], filename)
         base_name = os.path.splitext(filename)[0]
+        
+        # 临时和输出文件路径
         wav_path = os.path.join(CONFIG["SOURCE_DIR"], f"{base_name}_TEMP.wav")
         txt_path = os.path.join(CONFIG["TRANSCRIPT_DIR"], f"{base_name}.txt")
         processed_audio_path = os.path.join(CONFIG["PROCESSED_DIR"], filename)
 
         try:
-            if not convert_audio_to_wav(audio_path, wav_path): continue
+            # 1. 转换格式
+            if not convert_audio_to_wav(audio_path, wav_path): 
+                print("  转换失败，跳过")
+                continue
             
+            # 2. 调用 API
             result_data = transcribe_wav(wav_path) 
-            if result_data is None: continue
+            if result_data is None: 
+                print("  转录失败，跳过")
+                continue
             
             full_text = result_data["full_text"]
             segments = result_data["segments"]
 
-            # 过滤掉空文本的片段
+            # 3. 过滤空片段
             filtered_segments = []
             for seg in segments:
                 if seg.get("text", "").strip():
                     filtered_segments.append(seg)
 
-            # 【修改】调用新的带声纹保存函数
+            # 4. 保存 TXT (包含声纹名)
             save_transcript_with_spk(full_text, filtered_segments, txt_path)
             
-            # 保存到数据库 (segments 中已包含 spk 字段)
-            if not save_to_db(filename, full_text, filtered_segments): continue
+            # 5. 保存 DB
+            if not save_to_db(filename, full_text, filtered_segments): 
+                print("  数据库保存失败，跳过归档")
+                continue
 
+            # 6. 移动归档 (覆盖同名文件)
+            if os.path.exists(processed_audio_path):
+                os.remove(processed_audio_path)
             os.rename(audio_path, processed_audio_path)
-            print(f"  [完成] 已归档。")
+            
+            print(f"  [完成] 已归档 -> {processed_audio_path}")
+            
+            # 7. 通知
             notify_n8n("success", filename, full_text[:100])
             processed_count += 1
 
         except Exception as e:
             print(f"  [异常] {e}")
         finally:
-            if os.path.exists(wav_path): os.remove(wav_path)
+            # 清理临时 wav
+            if os.path.exists(wav_path): 
+                try: os.remove(wav_path)
+                except: pass
             
     return processed_count
 
 def main():
-    # 解析命令行参数
     args = parse_args()
-    
-    # 根据命令行参数更新配置
     update_config(args)
     
-    print("--- 启动实时监控模式 (含声纹支持) ---")
+    print("--- 启动实时监控模式 (SenseVoice 适配版) ---")
+    print(f"监控目录: {CONFIG['SOURCE_DIR']}")
+    
     init_db()
     os.makedirs(CONFIG["TRANSCRIPT_DIR"], exist_ok=True)
     os.makedirs(CONFIG["PROCESSED_DIR"], exist_ok=True)
 
-    # 【死循环监控核心】
     while True:
         try:
-            # 运行处理逻辑
             process_one_loop()
-            
-            # 休息 3 秒钟再看
             time.sleep(3) 
-            
         except KeyboardInterrupt:
             print("停止监控。")
             break
         except Exception as e:
             print(f"主循环发生错误: {e}")
-            time.sleep(10) # 出错后多睡一会
+            time.sleep(10)
 
 if __name__ == "__main__":
     main()
