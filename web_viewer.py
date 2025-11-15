@@ -643,33 +643,40 @@ HTML_TEMPLATE = """
 
                 if (item.segments && item.segments.length > 0) {
                     item.segments.forEach(seg => {
-                        // 模拟头像ID，如果没有就默认 0
-                        const spkId = seg.spk_id || 0; 
-                        const spkName = "说话人"; // 如果后端能识别，这里可以变成 "Speaker 1"
+                    // 跳过空白文本
+                    if (!seg.text || seg.text.trim() === "") {
+                        return;
+                    }
+                    // 模拟头像ID，如果没有就默认 0
+                    const spkId = seg.spk_id || 0; 
+                    const spkName = "说话人"; // 如果后端能识别，这里可以变成 "Speaker 1"
 
-                        html += `
-                            <div class="chat-bubble-row">
-                                <div class="avatar avatar-${spkId % 2}">User</div>
-                                <div class="bubble-content">
-                                    <div class="speaker-name">${spkName}</div>
-                                    <div class="bubble">
-                                        ${seg.text}
-                                    </div>
-                                    <div class="chat-time">${seg.start_fmt}</div>
-                                </div>
-                            </div>
-                        `;
-                    });
-                } else {
-                    // 如果没有分段，就显示一大块
                     html += `
                         <div class="chat-bubble-row">
-                             <div class="avatar avatar-0">User</div>
-                             <div class="bubble-content">
-                                <div class="bubble">${item.full_text}</div>
-                             </div>
-                        </div>`;
+                            <div class="avatar avatar-${spkId % 2}">User</div>
+                            <div class="bubble-content">
+                                <div class="speaker-name">${spkName}</div>
+                                <div class="bubble">
+                                    ${seg.text}
+                                </div>
+                                <div class="chat-time">${seg.start_fmt}</div>
+                            </div>
+                        </div>
+                    `;
+                });
+                } else {
+                // 如果没有分段，就显示一大块
+                if (!item.full_text || item.full_text.trim() === "") {
+                    return;
                 }
+                html += `
+                    <div class="chat-bubble-row">
+                         <div class="avatar avatar-0">User</div>
+                         <div class="bubble-content">
+                            <div class="bubble">${item.full_text}</div>
+                         </div>
+                    </div>`;
+            }
             });
             container.innerHTML = html;
         }
