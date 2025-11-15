@@ -25,22 +25,33 @@ ensure_service_running() {
     # wc -l 用于统计行数
     local PROC_COUNT=$(ps aux | grep "[${SCRIPT_NAME:0:1}]${SCRIPT_NAME:1}" | wc -l)
 
-    if [ "$PROC_COUNT" -eq 1 ]; then
-        echo "  [保持] $SCRIPT_NAME 已经在运行中 (PID: $(ps aux | grep "[${SCRIPT_NAME:0:1}]${SCRIPT_NAME:1}" | awk '{print $2}')). 无需操作。"
-    elif [ "$PROC_COUNT" -gt 1 ]; then
-        echo "  [警告] 检测到 $PROC_COUNT 个 $SCRIPT_NAME 实例在运行！建议手动停止多余进程。"
-        echo "  (为安全起见，脚本不会自动杀进程，请手动运行: killall python3 或 pkill -f $SCRIPT_NAME)"
-    else
-        echo "  [启动] 未检测到运行实例。正在启动..."
-        nohup $PYTHON_PATH "$FULL_PATH" > "$LOG_FILE" 2>&1 &
-        sleep 2 # 等待进程初始化
-
-        # 二次确认启动结果
-        if ps aux | grep -q "[${SCRIPT_NAME:0:1}]${SCRIPT_NAME:1}"; then
-             echo "  [成功] $SCRIPT_NAME 已成功启动。"
-        else
-             echo "  [失败] $SCRIPT_NAME 启动失败！请查看日志: $LOG_FILE"
+    # 如果有进程在运行，杀掉它们
+    if [ "$PROC_COUNT" -ge 1 ]; then
+        local PIDS=$(ps aux | grep "[${SCRIPT_NAME:0:1}]${SCRIPT_NAME:1}" | awk '{print $2}')
+        echo "  [停止] 检测到 $PROC_COUNT 个 $SCRIPT_NAME 实例在运行 (PID: $PIDS)。正在停止..."
+        pkill -f "$SCRIPT_NAME"
+        # 等待进程完全停止
+        sleep 1
+        # 再次检查是否还有进程残留
+        local REMAINING=$(ps aux | grep "[${SCRIPT_NAME:0:1}]${SCRIPT_NAME:1}" | wc -l)
+        if [ "$REMAINING" -gt 0 ]; then
+            echo "  [强制停止] 仍有 $REMAINING 个实例残留，正在强制停止..."
+            pkill -9 -f "$SCRIPT_NAME"
+            sleep 1
         fi
+    fi
+
+    # 启动新的实例
+    echo "  [启动] 正在启动 $SCRIPT_NAME..."
+    nohup $PYTHON_PATH "$FULL_PATH" > "$LOG_FILE" 2>&1 &
+    sleep 2 # 等待进程初始化
+
+    # 二次确认启动结果
+    if ps aux | grep -q "[${SCRIPT_NAME:0:1}]${SCRIPT_NAME:1}"; then
+        local NEW_PID=$(ps aux | grep "[${SCRIPT_NAME:0:1}]${SCRIPT_NAME:1}" | awk '{print $2}')
+        echo "  [成功] $SCRIPT_NAME 已成功启动 (PID: $NEW_PID)。"
+    else
+        echo "  [失败] $SCRIPT_NAME 启动失败！请查看日志: $LOG_FILE"
     fi
     echo "-----------------------------------"
 }
