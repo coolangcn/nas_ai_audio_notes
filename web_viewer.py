@@ -43,7 +43,7 @@ def get_system_status():
         status["asr_server"] = "offline"
 
     try:
-        files = [f for f in os.listdir(SOURCE_DIR) if f.endswith(".aac")]
+        files = [f for f in os.listdir(SOURCE_DIR) if f.endswith(".m4a")]
         status["pending_files"] = len(files)
     except:
         status["pending_files"] = -1
@@ -90,19 +90,30 @@ def get_transcripts():
             # 优先从文件名解析时间
             filename = data['filename']
             dt = None
-            # 匹配文件名格式：YYYY-MM-DD_HH-MM-SS.aac
-            time_pattern = r'^\s*(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2}-\d{2})\s*'
-            match = re.match(time_pattern, os.path.splitext(filename)[0])
-            if match:
-                # 组合日期和时间
-                date_part = match.group(1)
-                time_part = match.group(2)
-                # 转换为datetime对象
-                try:
-                    dt_str = f"{date_part} {time_part.replace('-', ':')}"
-                    dt = datetime.datetime.strptime(dt_str, '%Y-%m-%d %H:%M:%S')
-                except ValueError:
-                    pass
+            # 匹配文件名格式：YYYY-MM-DD_HH-MM-SS.m4a 或 recording-YYYYMMDD-HHMMSS.m4a
+            time_patterns = [
+                r'^\s*(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2}-\d{2})\s*',  # 原始格式
+                r'^\s*recording-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})\s*'  # 新格式
+            ]
+            
+            for pattern in time_patterns:
+                match = re.match(pattern, os.path.splitext(filename)[0])
+                if match:
+                    try:
+                        if pattern == time_patterns[0]:  # 原始格式
+                            date_part = match.group(1)
+                            time_part = match.group(2)
+                            dt_str = f"{date_part} {time_part.replace('-', ':')}"
+                            dt = datetime.datetime.strptime(dt_str, '%Y-%m-%d %H:%M:%S')
+                        else:  # 新格式 recording-YYYYMMDD-HHMMSS
+                            year, month, day, hour, minute, second = match.groups()
+                            dt_str = f"{year}-{month}-{day} {hour}:{minute}:{second}"
+                            dt = datetime.datetime.strptime(dt_str, '%Y-%m-%d %H:%M:%S')
+                        break  # 成功解析则退出循环
+                    except ValueError:
+                        continue  # 尝试下一个模式
+                        
+            # 如果文件名解析失败，使用数据库的created_at
 
             # 如果文件名解析失败，使用数据库的created_at
             if dt is None:
@@ -184,7 +195,7 @@ HTML_TEMPLATE = """
         .bubble-content { max-width: 70%; display: flex; flex-direction: column; }
         .speaker-name { font-size: 0.75em; color: #888; margin-bottom: 2px; margin-left: 5px; }
         .bubble { background-color: var(--chat-other); padding: 10px 14px; border-radius: 0 12px 12px 12px; position: relative; box-shadow: 0 1px 2px rgba(0,0,0,0.1); font-size: 1em; line-height: 1.5; }
-        .chat-time { font-size: 0.7em; color: #999; text-align: right; margin-top: 4px; margin-right: 5px; }
+        .chat-time { font-size: 0.8em; color: #666; font-weight: bold; text-align: right; margin-top: 4px; margin-right: 5px; }
 
     </style>
 </head>
@@ -419,7 +430,7 @@ def get_system_status():
         status["asr_server"] = "offline"
 
     try:
-        files = [f for f in os.listdir(SOURCE_DIR) if f.endswith(".aac")]
+        files = [f for f in os.listdir(SOURCE_DIR) if f.endswith(".m4a")]
         status["pending_files"] = len(files)
     except:
         status["pending_files"] = -1
@@ -676,6 +687,9 @@ HTML_TEMPLATE = """
                     // 模拟头像ID，如果没有就默认 0
                     const spkId = seg.spk_id || 0; 
                     const spkName = "说话人"; // 如果后端能识别，这里可以变成 "Speaker 1"
+                    
+                    // 只有当有文本内容时才显示时间
+                    const timeDisplay = seg.text.trim() !== "" ? `<div class="chat-time">${seg.start_fmt}</div>` : "";
 
                     html += `
                         <div class="chat-bubble-row">
@@ -685,7 +699,7 @@ HTML_TEMPLATE = """
                                 <div class="bubble">
                                     ${seg.text}
                                 </div>
-                                <div class="chat-time">${seg.start_fmt}</div>
+                                ${timeDisplay}
                             </div>
                         </div>
                     `;
@@ -700,6 +714,7 @@ HTML_TEMPLATE = """
                          <div class="avatar avatar-0">User</div>
                          <div class="bubble-content">
                             <div class="bubble">${item.full_text}</div>
+                            <div class="chat-time">来源时间: ${item.time_simple}</div>
                          </div>
                     </div>`;
             }

@@ -63,9 +63,9 @@ def notify_n8n(status, filename, details):
     except:
         pass
 
-def convert_aac_to_wav(aac_path, wav_path):
+def convert_m4a_to_wav(m4a_path, wav_path):
     FFMPEG_PATH = "/usr/local/bin/ffmpeg"
-    command = [FFMPEG_PATH, '-i', aac_path, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wav_path, '-y']
+    command = [FFMPEG_PATH, '-i', m4a_path, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wav_path, '-y']
     try:
         subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         return True
@@ -101,8 +101,8 @@ def transcribe_wav(wav_path):
 def process_one_loop():
     """执行一次扫描处理"""
     processed_count = 0
-    # 检查目录里有没有 .aac 文件
-    files = [f for f in os.listdir(CONFIG["SOURCE_DIR"]) if f.endswith(".aac")]
+    # 检查目录里有没有 .m4a 文件
+    files = [f for f in os.listdir(CONFIG["SOURCE_DIR"]) if f.endswith(".m4a")]
     
     if not files:
         return 0 # 没有文件，直接返回
@@ -111,14 +111,14 @@ def process_one_loop():
 
     for filename in files:
         print(f"\n>>> 处理: {filename}")
-        aac_path = os.path.join(CONFIG["SOURCE_DIR"], filename)
+        m4a_path = os.path.join(CONFIG["SOURCE_DIR"], filename)
         base_name = os.path.splitext(filename)[0]
         wav_path = os.path.join(CONFIG["SOURCE_DIR"], f"{base_name}_TEMP.wav")
         txt_path = os.path.join(CONFIG["TRANSCRIPT_DIR"], f"{base_name}.txt")
-        processed_aac_path = os.path.join(CONFIG["PROCESSED_DIR"], filename)
+        processed_m4a_path = os.path.join(CONFIG["PROCESSED_DIR"], filename)
 
         try:
-            if not convert_aac_to_wav(aac_path, wav_path): continue
+            if not convert_m4a_to_wav(m4a_path, wav_path): continue
             
             result_data = transcribe_wav(wav_path) 
             if result_data is None: continue
@@ -135,7 +135,7 @@ def process_one_loop():
             save_transcript(full_text, txt_path)
             if not save_to_db(filename, full_text, filtered_segments): continue
 
-            os.rename(aac_path, processed_aac_path)
+            os.rename(m4a_path, processed_m4a_path)
             print(f"  [完成] 已归档。")
             notify_n8n("success", filename, full_text[:100])
             processed_count += 1
