@@ -12,10 +12,14 @@ import subprocess
 import argparse
 
 # --- 配置 ---
+# 获取脚本自身所在的目录
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 DEFAULT_DB_PATH = "/volume2/download/records/Sony-2/transcripts.db"
 DEFAULT_SOURCE_DIR = "/volume2/download/records/Sony-2"
 DEFAULT_ASR_API_URL = "http://192.168.1.111:5000/transcribe"
-DEFAULT_LOG_FILE_PATH = "/volume1/docker/scripts/nas_ai_audio_notes/transcribe.log"
+# 将日志文件路径与脚本目录关联
+DEFAULT_LOG_FILE_PATH = os.path.join(SCRIPT_DIR, "transcribe.log")
 DEFAULT_WEB_PORT = 5009 
 
 # 全局配置变量
@@ -91,7 +95,9 @@ def get_system_status():
     return status
 
 def get_transcripts():
+    print(f"Attempting to read database from: {CONFIG['DB_PATH']}")
     if not os.path.exists(CONFIG["DB_PATH"]):
+        print(f"Database file not found at: {CONFIG['DB_PATH']}")
         return []
     try:
         db = sqlite3.connect(CONFIG["DB_PATH"])
@@ -156,7 +162,8 @@ def get_transcripts():
                 data['time_full'] = ""
             results.append(data)
         return results
-    except:
+    except Exception as e:
+        print(f"[Error] Failed to get transcripts: {e}")
         return []
 
 # --- HTML 模板 ---
