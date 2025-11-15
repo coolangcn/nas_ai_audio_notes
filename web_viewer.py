@@ -15,7 +15,7 @@ import subprocess
 DB_PATH = "/volume2/download/records/Sony-2/transcripts.db"
 SOURCE_DIR = "/volume2/download/records/Sony-2"
 ASR_API_URL = "http://192.168.1.111:5000/transcribe"
-LOG_FILE_PATH = "/volume1/docker/scripts/transcribe.log"
+LOG_FILE_PATH = "/volume1/docker/scripts/nas_ai_audio_notes/transcribe.log"
 WEB_PORT = 5009 
 # -----------------
 
@@ -391,7 +391,7 @@ import subprocess
 DB_PATH = "/volume2/download/records/Sony-2/transcripts.db"
 SOURCE_DIR = "/volume2/download/records/Sony-2"
 ASR_API_URL = "http://192.168.1.111:5000/transcribe"
-LOG_FILE_PATH = "/volume1/docker/scripts/transcribe.log"
+LOG_FILE_PATH = "/volume1/docker/scripts/nas_ai_audio_notes/transcribe.log"
 WEB_PORT = 5009 
 # -----------------
 
