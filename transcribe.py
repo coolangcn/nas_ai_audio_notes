@@ -8,9 +8,10 @@ import json
 import datetime
 import sqlite3
 import time
+import argparse
 
 # --- 配置 ---
-CONFIG = {
+DEFAULT_CONFIG = {
     "ASR_HTTP_URL": "http://192.168.1.111:5000/transcribe",
     "SOURCE_DIR": "/volume2/download/records/Sony-2",
     "TRANSCRIPT_DIR": "/volume2/download/records/Sony-2/transcripts",
@@ -18,6 +19,27 @@ CONFIG = {
     "N8N_WEBHOOK_URL": "https://n8n.moco.fun/webhook/bea45d47-d1fc-498e-bf69-d48dc079f04a",
     "DB_PATH": "/volume2/download/records/Sony-2/transcripts.db" 
 }
+
+# 全局配置变量
+CONFIG = DEFAULT_CONFIG.copy()
+
+def parse_args():
+    """解析命令行参数"""
+    parser = argparse.ArgumentParser(description='音频转录脚本')
+    parser.add_argument('--source-path', type=str, help='源音频文件路径')
+    return parser.parse_args()
+
+def update_config(args):
+    """根据命令行参数更新配置"""
+    global CONFIG
+    if args.source_path:
+        # 更新所有相关路径
+        base_path = args.source_path
+        CONFIG["SOURCE_DIR"] = base_path
+        CONFIG["TRANSCRIPT_DIR"] = os.path.join(base_path, "transcripts")
+        CONFIG["PROCESSED_DIR"] = os.path.join(base_path, "processed")
+        CONFIG["DB_PATH"] = os.path.join(base_path, "transcripts.db")
+        print(f"[配置] 使用自定义源路径: {base_path}")
 # ---------------------------------------------
 
 def format_time(ms):
@@ -183,6 +205,12 @@ def process_one_loop():
     return processed_count
 
 def main():
+    # 解析命令行参数
+    args = parse_args()
+    
+    # 根据命令行参数更新配置
+    update_config(args)
+    
     print("--- 启动实时监控模式 (含声纹支持) ---")
     init_db()
     os.makedirs(CONFIG["TRANSCRIPT_DIR"], exist_ok=True)

@@ -10,13 +10,37 @@ from collections import defaultdict
 import datetime
 import requests
 import subprocess
+import argparse
 
 # --- 配置 ---
-DB_PATH = "/volume2/download/records/Sony-2/transcripts.db"
-SOURCE_DIR = "/volume2/download/records/Sony-2"
-ASR_API_URL = "http://192.168.1.111:5000/transcribe"
-LOG_FILE_PATH = "/volume1/docker/scripts/nas_ai_audio_notes/transcribe.log"
-WEB_PORT = 5009 
+DEFAULT_DB_PATH = "/volume2/download/records/Sony-2/transcripts.db"
+DEFAULT_SOURCE_DIR = "/volume2/download/records/Sony-2"
+DEFAULT_ASR_API_URL = "http://192.168.1.111:5000/transcribe"
+DEFAULT_LOG_FILE_PATH = "/volume1/docker/scripts/nas_ai_audio_notes/transcribe.log"
+DEFAULT_WEB_PORT = 5009 
+
+# 全局配置变量
+DB_PATH = DEFAULT_DB_PATH
+SOURCE_DIR = DEFAULT_SOURCE_DIR
+ASR_API_URL = DEFAULT_ASR_API_URL
+LOG_FILE_PATH = DEFAULT_LOG_FILE_PATH
+WEB_PORT = DEFAULT_WEB_PORT
+
+def parse_args():
+    """解析命令行参数"""
+    parser = argparse.ArgumentParser(description='Web查看器脚本')
+    parser.add_argument('--source-path', type=str, help='源音频文件路径')
+    return parser.parse_args()
+
+def update_config(args):
+    """根据命令行参数更新配置"""
+    global DB_PATH, SOURCE_DIR
+    if args.source_path:
+        # 更新所有相关路径
+        base_path = args.source_path
+        SOURCE_DIR = base_path
+        DB_PATH = os.path.join(base_path, "transcripts.db")
+        print(f"[配置] 使用自定义源路径: {base_path}")
 # -----------------
 
 app = Flask(__name__)
@@ -491,4 +515,10 @@ def index():
     return render_template_string(HTML_TEMPLATE)
 
 if __name__ == "__main__":
+    # 解析命令行参数
+    args = parse_args()
+    
+    # 根据命令行参数更新配置
+    update_config(args)
+    
     app.run(host='0.0.0.0', port=WEB_PORT, debug=False)
