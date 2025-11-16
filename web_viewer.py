@@ -296,6 +296,8 @@ HTML_TEMPLATE = """
 
     <script>
         let lastDataFingerprint = "";
+        const speakerColorMap = {};
+        let nextColorIndex = 0;
 
         function switchTab(tabName) {
             document.querySelectorAll('.view-container').forEach(el => el.classList.remove('active'));
@@ -328,14 +330,15 @@ HTML_TEMPLATE = """
             return stripped.length > 0;
         }
 
-        // 3. 获取头像颜色索引
+        // 3. 获取头像颜色索引 (使用映射表确保颜色稳定)
         function getAvatarIndex(spkId) {
-            if (typeof spkId === 'number') return spkId;
-            if (!spkId) return 0;
-            let hash = 0;
-            const str = String(spkId);
-            for (let i = 0; i < str.length; i++) hash += str.charCodeAt(i);
-            return Math.abs(hash);
+            if (spkId in speakerColorMap) {
+                return speakerColorMap[spkId];
+            }
+            const colorIndex = nextColorIndex % 5;
+            speakerColorMap[spkId] = colorIndex;
+            nextColorIndex++;
+            return colorIndex;
         }
 
         // 4. 预处理统计数据
@@ -477,7 +480,7 @@ HTML_TEMPLATE = """
 
                         html += `
                             <div class="chat-bubble-row">
-                                <div class="avatar avatar-${avatarIdx % 10}">${iconText}</div>
+                                <div class="avatar avatar-${avatarIdx % 5}">${iconText}</div>
                                 <div class="bubble-content">
                                     <div class="speaker-name">${spkName}</div>
                                     <div class="bubble">${txt}</div>
@@ -498,7 +501,7 @@ HTML_TEMPLATE = """
                     let avatarIdx = getAvatarIndex(0); // Default avatar for full_text
                     html += `
                         <div class="chat-bubble-row">
-                             <div class="avatar avatar-${avatarIdx % 10}">${iconText}</div>
+                             <div class="avatar avatar-${avatarIdx % 5}">${iconText}</div>
                              <div class="bubble-content">
                                 <div class="bubble">${txt}</div>
                                 <div class="chat-time">来源时间: ${item.time_simple}</div>
@@ -553,7 +556,7 @@ HTML_TEMPLATE = """
                 
                 html += `
                     <div class="speaker-card">
-                        <div class="speaker-icon avatar-${avatarIdx % 10}">
+                        <div class="speaker-icon avatar-${avatarIdx % 5}">
                             ${iconText}
                         </div>
                         <div class="speaker-info">
