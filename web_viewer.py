@@ -87,26 +87,18 @@ def get_system_status():
         status["pending_files"] = -1
 
     try:
-        # 优先读取本地目录下的日志，或者配置里的日志
-        log_path = CONFIG["LOG_FILE_PATH"]
-        # 如果配置的日志不存在，尝试在当前目录找
-        if not os.path.exists(log_path):
-             log_path = "transcribe.log"
-
-        if os.path.exists(log_path):
-            # 读取最后 20 行
+        if os.path.exists(CONFIG["LOG_FILE_PATH"]):
+            # 尝试读取日志，兼容不同编码
             try:
-                # 使用 tail 命令 (Linux/Mac)
-                cmd = f"tail -n 20 {log_path}" 
+                cmd = f"tail -n 20 {CONFIG['LOG_FILE_PATH']}" 
                 result = subprocess.check_output(cmd, shell=True).decode('utf-8')
                 status["last_log"] = result
             except:
-                # Windows 兼容或者是读文件失败，用 Python 读取
-                with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                with open(CONFIG["LOG_FILE_PATH"], 'r', encoding='utf-8', errors='ignore') as f:
                     lines = f.readlines()
                     status["last_log"] = "".join(lines[-20:])
         else:
-            status["last_log"] = f"找不到日志文件: {log_path}"
+            status["last_log"] = f"找不到日志文件: {CONFIG['LOG_FILE_PATH']}"
     except Exception as e:
         status["last_log"] = f"读取日志失败: {e}"
 
@@ -134,8 +126,11 @@ def get_transcripts():
             
             for seg in data['segments']:
                 seg['start_fmt'] = format_timestamp(seg.get('start', 0))
-                # 兼容后端传来的 spk 字段 (可能是数字，可能是字符串"爸爸")
+                # 兼容后端传来的 spk 字段
                 seg['spk_id'] = seg.get('spk', 0) 
+                # 兼容 emotion 字段 (如果没有则默认为 neutral)
+                if 'emotion' not in seg:
+                    seg['emotion'] = 'neutral'
             
             # 解析时间
             filename = data['filename']
@@ -189,7 +184,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI 录音存档</title>
+    <title>AI 录音存档 (Emotion)</title>
     <style>
         :root { --primary: #007bff; --bg: #f0f2f5; --card-bg: #ffffff; --text: #333; --console-bg: #1e1e1e; --console-text: #00ff00; --chat-me: #d9fdd3; --chat-other: #ffffff; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: var(--bg); color: var(--text); margin: 0; padding: 0; height: 100vh; display: flex; flex-direction: column; }
@@ -205,7 +200,7 @@ HTML_TEMPLATE = """
         .view-container.active { display: block; }
 
         /* === 视图 1: 仪表盘样式 === */
-        .dashboard-panel { display: grid; grid-template-columns: 1fr 2fr; grid-template-rows: 1fr; gap: 20px; margin-bottom: 20px; max-width: 1000px; margin-left: auto; margin-right: auto; align-items: stretch; }
+        .dashboard-panel { display: grid; grid-template-columns: 1fr 2fr; gap: 20px; margin-bottom: 20px; max-width: 1000px; margin-left: auto; margin-right: auto; }
         .status-card { background: var(--card-bg); padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
         .status-item { margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #eee; padding-bottom: 10px; }
         .status-item:last-child { border-bottom: none; }
@@ -214,7 +209,7 @@ HTML_TEMPLATE = """
         
         .console-window { background: var(--console-bg); color: var(--console-text); padding: 15px; border-radius: 8px; font-family: monospace; font-size: 0.85em; height: 150px; overflow-y: auto; white-space: pre-wrap; }
         
-        .transcript-card { background: var(--card-bg); border-radius: 8px; margin-bottom: 15px; padding: 20px; max-width: 960px; margin-left: auto; margin-right: auto; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .transcript-card { background: var(--card-bg); border-radius: 8px; margin-bottom: 15px; padding: 20px; max-width: 1000px; margin-left: auto; margin-right: auto; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
         .transcript-card.new-item { border-left: 4px solid #28a745; background-color: #f8fff9; }
         .card-meta { display: flex; justify-content: space-between; color: #888; font-size: 0.85em; margin-bottom: 10px; border-bottom: 1px solid #eee; padding-bottom: 5px; }
         .filename { font-weight: 600; color: #444; }
@@ -232,7 +227,7 @@ HTML_TEMPLATE = """
         .avatar { width: 40px; height: 40px; background-color: #ccc; border-radius: 50%; display: flex; justify-content: center; align-items: center; font-weight: bold; color: white; font-size: 0.9em; flex-shrink: 0; }
         
         .bubble-content { max-width: 70%; display: flex; flex-direction: column; }
-        .speaker-name { font-size: 0.75em; color: #888; margin-bottom: 2px; margin-left: 5px; }
+        .speaker-name { font-size: 0.75em; color: #888; margin-bottom: 2px; margin-left: 5px; display: flex; align-items: center; gap: 5px; }
         .bubble { background-color: var(--chat-other); padding: 10px 14px; border-radius: 0 12px 12px 12px; position: relative; box-shadow: 0 1px 2px rgba(0,0,0,0.1); font-size: 1em; line-height: 1.5; }
         .chat-time { font-size: 0.7em; color: #999; text-align: right; margin-top: 4px; margin-right: 5px; }
 
@@ -248,12 +243,9 @@ HTML_TEMPLATE = """
         .speaker-info h4 { margin: 0 0 10px 0; color: #333; font-size: 1.1em; }
         .speaker-stats-detail { display: flex; justify-content: space-between; background: #f8f9fa; padding: 8px 12px; border-radius: 8px; text-align: center; }
         
-        /* 头像颜色 (限定为 5 种高对比度色) */
-        .avatar-0 { background: #1A53E0; } /* 亮蓝色 */
-        .avatar-1 { background: #28A745; } /* 鲜绿色 */
-        .avatar-2 { background: #FF7733; } /* 亮橙色 */
-        .avatar-3 { background: #8E44AD; } /* 深紫色 */
-        .avatar-4 { background: #DC3545; } /* 鲜红色 */
+        /* 扩展头像颜色到 10 种 */
+        .avatar-0 { background: #4e54c8; } .avatar-1 { background: #ef476f; } .avatar-2 { background: #ffd166; color: #333; } .avatar-3 { background: #06d6a0; } .avatar-4 { background: #118ab2; }
+        .avatar-5 { background: #073b4c; } .avatar-6 { background: #9d4edd; } .avatar-7 { background: #ff9f1c; } .avatar-8 { background: #2ec4b6; } .avatar-9 { background: #e71d36; }
 
     </style>
 </head>
@@ -296,8 +288,6 @@ HTML_TEMPLATE = """
 
     <script>
         let lastDataFingerprint = "";
-        const speakerColorMap = {};
-        let nextColorIndex = 0;
 
         function switchTab(tabName) {
             document.querySelectorAll('.view-container').forEach(el => el.classList.remove('active'));
@@ -310,35 +300,31 @@ HTML_TEMPLATE = """
             else if(tabName === 'analysis') btns[2].classList.add('active');
         }
         
-        // --- 核心辅助函数 ---
+        // --- 关键辅助函数 ---
 
-        // 1. 深度文本清洗：去除标签、标点、空格
+        // 1. 文本清洗：去除 SenseVoice 的标签 (<|zh|>, <|happy|>)
         function cleanText(text) {
             if (!text) return "";
-            // 去除 SenseVoice 标签
-            let clean = text.replace(/<\|.*?\|>/g, "");
-            return clean;
+            return text.replace(/<\|.*?\|>/g, "");
         }
 
-        // 2. 检查是否包含有效内容 (过滤掉只有标点符号的情况)
+        // 2. 获取头像颜色索引 (支持字符串ID)
+        function getAvatarIndex(spkId) {
+            if (typeof spkId === 'number') return spkId;
+            if (!spkId) return 0;
+            let hash = 0;
+            const str = String(spkId);
+            for (let i = 0; i < str.length; i++) hash += str.charCodeAt(i);
+            return Math.abs(hash);
+        }
+
+        // 3. 检查有效内容 (过滤掉只有标点符号的情况)
         function hasMeaningfulContent(text) {
             if (!text) return false;
             const clean = cleanText(text);
             // 去除所有标点符号、空格、换行
-            // 匹配：英文标点, 中文标点, 空白符
             const stripped = clean.replace(/[.,\/#!$%\^&\*;:{}=\-_`~()。，、？！：；“”‘’\s]/g, "");
             return stripped.length > 0;
-        }
-
-        // 3. 获取头像颜色索引 (使用映射表确保颜色稳定)
-        function getAvatarIndex(spkId) {
-            if (spkId in speakerColorMap) {
-                return speakerColorMap[spkId];
-            }
-            const colorIndex = nextColorIndex % 5;
-            speakerColorMap[spkId] = colorIndex;
-            nextColorIndex++;
-            return colorIndex;
         }
 
         // 4. 预处理统计数据
@@ -347,7 +333,6 @@ HTML_TEMPLATE = """
                 const stats = {};
                 if (item.segments && item.segments.length > 0) {
                     item.segments.forEach(seg => {
-                        // 只有有效内容才计入统计
                         if (!hasMeaningfulContent(seg.text)) return;
 
                         const spkId = seg.spk_id !== undefined ? seg.spk_id : 'unknown';
@@ -374,6 +359,7 @@ HTML_TEMPLATE = """
 
         async function updateLoop() {
             try {
+                // 1. 状态更新
                 const statusRes = await fetch('/api/status');
                 const statusData = await statusRes.json();
                 const asrBadge = document.getElementById('status-asr');
@@ -387,9 +373,11 @@ HTML_TEMPLATE = """
                 const consoleWin = document.querySelector('.console-window');
                 consoleWin.scrollTop = consoleWin.scrollHeight;
 
+                // 2. 数据更新
                 const dataRes = await fetch('/api/data');
                 let items = await dataRes.json();
                 
+                // 计算统计
                 items = processStats(items);
                 
                 if (items.length === 0) return;
@@ -408,30 +396,19 @@ HTML_TEMPLATE = """
             const container = document.getElementById('dashboard-content');
             let html = "";
             items.forEach(item => {
-                // === 严格过滤 ===
-                // 如果全文都没有有效内容(去标点后为空)，直接跳过整张卡片
-                let hasValidContent = false;
-                if (item.segments && item.segments.length > 0) {
-                    hasValidContent = item.segments.some(seg => hasMeaningfulContent(seg.text));
-                } else {
-                    hasValidContent = hasMeaningfulContent(item.full_text);
-                }
-                if (!hasValidContent) return; // 跳过无效文件
-                // ===============
-
                 let segHtml = "";
                 if (item.segments && item.segments.length > 0) {
                     item.segments.forEach(seg => {
-                        if (!hasMeaningfulContent(seg.text)) return; // 跳过无效片段
+                        if (!hasMeaningfulContent(seg.text)) return;
                         const txt = cleanText(seg.text);
                         segHtml += `<div class="segment"><span class="timestamp">[${seg.start_fmt}]</span><span>${txt}</span></div>`;
                     });
                 } else {
-                    const txt = cleanText(item.full_text);
-                    if (txt) segHtml = `<div class="segment"><span>${txt}</span></div>`;
+                    if (hasMeaningfulContent(item.full_text)) {
+                        const txt = cleanText(item.full_text);
+                        segHtml = `<div class="segment"><span>${txt}</span></div>`;
+                    }
                 }
-                
-                // 二次检查：如果过滤后没有 segHtml 了，也不渲染
                 if (!segHtml) return;
 
                 html += `
@@ -448,16 +425,21 @@ HTML_TEMPLATE = """
             let html = "";
             let currentDay = "";
 
+            // 情感 Emoji 映射表
+            const emoMap = {
+                "happy": "😊", "sad": "😔", "angry": "😡",
+                "laughter": "🤣", "fearful": "😨", "surprised": "😲",
+                "disgusted": "🤢", "neutral": ""
+            };
+
             items.forEach(item => {
-                // === 严格过滤 ===
                 let hasValidContent = false;
                 if (item.segments && item.segments.length > 0) {
                     hasValidContent = item.segments.some(seg => hasMeaningfulContent(seg.text));
-                } else {
-                    hasValidContent = hasMeaningfulContent(item.full_text);
+                } else if (hasMeaningfulContent(item.full_text)) {
+                    hasValidContent = true;
                 }
-                if (!hasValidContent) return; 
-                // ===============
+                if (!hasValidContent) return;
 
                 if (item.date_group !== currentDay) {
                     html += `<div class="chat-date-separator"><span class="chat-date-label">${item.date_group}</span></div>`;
@@ -467,22 +449,28 @@ HTML_TEMPLATE = """
 
                 if (item.segments && item.segments.length > 0) {
                     item.segments.forEach(seg => {
-                        if (!hasMeaningfulContent(seg.text)) return; // 跳过无效气泡
+                        if (!hasMeaningfulContent(seg.text)) return;
                         
                         const txt = cleanText(seg.text);
                         const spkId = seg.spk_id !== undefined ? seg.spk_id : 0;
                         let spkName = typeof spkId === 'number' ? `说话人 ${spkId}` : spkId;
                         let avatarIdx = getAvatarIndex(spkId);
                         
-                        // 截取名字的第一个字作为头像文字
-                        let iconText = spkName;
-                        if(iconText.length > 0) iconText = iconText.slice(0, 1);
+                        let iconText = "";
+                        if(typeof spkId === 'number') iconText = spkName.slice(-1); // 如果是 "说话人 1" 取 "1"
+                        else iconText = spkName.charAt(0).toUpperCase(); // 如果是 "爸爸" 取 "爸"
+
+                        // 获取情感图标
+                        const emotion = seg.emotion || "neutral";
+                        const emoIcon = emoMap[emotion] || "";
 
                         html += `
                             <div class="chat-bubble-row">
-                                <div class="avatar avatar-${avatarIdx % 5}">${iconText}</div>
+                                <div class="avatar avatar-${avatarIdx % 10}">${iconText}</div>
                                 <div class="bubble-content">
-                                    <div class="speaker-name">${spkName}</div>
+                                    <div class="speaker-name">
+                                        ${spkName} <span style="margin-left:5px; font-size:1.2em;">${emoIcon}</span>
+                                    </div>
                                     <div class="bubble">${txt}</div>
                                     <div class="chat-time">${seg.start_fmt}</div>
                                 </div>
@@ -491,17 +479,18 @@ HTML_TEMPLATE = """
                     });
                 } else {
                     const txt = cleanText(item.full_text);
-                    // 截取名字的第一个字作为头像文字
-                    let iconText = "未知"; // Default for full_text without speaker
+                    let iconText = "未";
+                    let avatarIdx = 0;
                     if (item.speaker_stats && Object.keys(item.speaker_stats).length > 0) {
-                        const firstSpkId = Object.keys(item.speaker_stats)[0];
-                        const firstSpkName = item.speaker_stats[firstSpkId].speaker_name;
-                        if (firstSpkName.length > 0) iconText = firstSpkName.slice(0, 1);
+                        const key = Object.keys(item.speaker_stats)[0];
+                        const name = item.speaker_stats[key].speaker_name;
+                        iconText = name.charAt(0);
+                        avatarIdx = getAvatarIndex(item.speaker_stats[key].original_id);
                     }
-                    let avatarIdx = getAvatarIndex(0); // Default avatar for full_text
+
                     html += `
                         <div class="chat-bubble-row">
-                             <div class="avatar avatar-${avatarIdx % 5}">${iconText}</div>
+                             <div class="avatar avatar-${avatarIdx % 10}">${iconText}</div>
                              <div class="bubble-content">
                                 <div class="bubble">${txt}</div>
                                 <div class="chat-time">来源时间: ${item.time_simple}</div>
@@ -550,13 +539,13 @@ HTML_TEMPLATE = """
                 const filesCount = stats.filesParticipated.size;
                 const avatarIdx = getAvatarIndex(stats.original_id);
                 
-                // 截取名字的第一个字作为头像文字
-                let iconText = stats.name;
-                if(iconText.length > 0) iconText = iconText.slice(0, 1);
+                let iconText = "";
+                if (typeof stats.original_id === 'number') iconText = stats.original_id;
+                else iconText = stats.name.slice(-1);
                 
                 html += `
                     <div class="speaker-card">
-                        <div class="speaker-icon avatar-${avatarIdx % 5}">
+                        <div class="speaker-icon avatar-${avatarIdx % 10}">
                             ${iconText}
                         </div>
                         <div class="speaker-info">

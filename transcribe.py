@@ -141,32 +141,34 @@ def convert_audio_to_wav(audio_path, wav_path):
         return False
 
 def save_transcript_with_spk(full_text, segments, txt_path):
-    """保存带有声纹和时间戳的 TXT 文件"""
+    """保存带有声纹、情感和时间戳的 TXT 文件"""
     try:
         content_lines = []
+        # 简单的中英文情感对照
+        emo_map = {
+            "happy": "😊开心", "sad": "😔悲伤", "angry": "😡生气", 
+            "laughter": "🤣大笑", "fearful": "😨害怕", "surprised": "😲惊讶",
+            "neutral": "" # 平静时不显示
+        }
         
-        # 1. 先写入全文摘要
-        clean_full_text = clean_sensevoice_tags(full_text)
-        content_lines.append(f"=== 全文摘要 ===\n{clean_full_text}\n")
+        content_lines.append(f"=== 全文摘要 ===\n{full_text}\n")
         content_lines.append("=== 对话记录 (按说话人) ===")
         
-        # 2. 写入带声纹的分段对话
         for seg in segments:
             start_str = format_time(seg.get('start', 0))
-            
             spk_raw = seg.get('spk')
-            if spk_raw is None:
-                spk_label = "Unknown"
-            elif isinstance(spk_raw, int):
-                spk_label = f"Speaker {spk_raw}"
-            else:
-                spk_label = str(spk_raw)
+            spk_label = str(spk_raw) if spk_raw else "Unknown"
             
-            text = clean_sensevoice_tags(seg.get('text', ''))
-            if not text.strip(): continue
+            # 【新增】处理情感
+            emotion_key = seg.get('emotion', 'neutral')
+            emo_str = emo_map.get(emotion_key, "")
+            if emo_str: emo_str = f" {emo_str}" # 加个空格
 
-            # 格式: [00:05:12] [爸爸]: 今天的饭很好吃
-            line = f"[{start_str}] [{spk_label}]: {text}"
+            text = seg.get('text', '').strip()
+            if not text: continue
+
+            # 格式: [00:05:12] [爸爸] 😊开心: 今天的饭很好吃
+            line = f"[{start_str}] [{spk_label}]{emo_str}: {text}"
             content_lines.append(line)
             
         with open(txt_path, 'w', encoding='utf-8') as f:
