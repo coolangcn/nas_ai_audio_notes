@@ -248,9 +248,17 @@ HTML_TEMPLATE = """
         .speaker-info h4 { margin: 0 0 10px 0; color: #333; font-size: 1.1em; }
         .speaker-stats-detail { display: flex; justify-content: space-between; background: #f8f9fa; padding: 8px 12px; border-radius: 8px; text-align: center; }
         
-        /* 扩展头像颜色到 10 种 */
-        .avatar-0 { background: #4e54c8; } .avatar-1 { background: #ef476f; } .avatar-2 { background: #ffd166; color: #333; } .avatar-3 { background: #06d6a0; } .avatar-4 { background: #118ab2; }
-        .avatar-5 { background: #073b4c; } .avatar-6 { background: #9d4edd; } .avatar-7 { background: #ff9f1c; } .avatar-8 { background: #2ec4b6; } .avatar-9 { background: #e71d36; }
+        /* 扩展头像颜色到 10 种, 前4种为高对比度色 */
+        .avatar-0 { background: #1A53E0; } /* 亮蓝色 */
+        .avatar-1 { background: #28A745; } /* 鲜绿色 */
+        .avatar-2 { background: #FF7733; } /* 亮橙色 */
+        .avatar-3 { background: #8E44AD; } /* 深紫色 */
+        .avatar-4 { background: #118ab2; } 
+        .avatar-5 { background: #073b4c; } 
+        .avatar-6 { background: #9d4edd; } 
+        .avatar-7 { background: #ff9f1c; } 
+        .avatar-8 { background: #2ec4b6; } 
+        .avatar-9 { background: #e71d36; }
 
     </style>
 </head>
