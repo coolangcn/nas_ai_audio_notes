@@ -205,7 +205,7 @@ HTML_TEMPLATE = """
         .view-container.active { display: block; }
 
         /* === 视图 1: 仪表盘样式 === */
-        .dashboard-panel { display: grid; grid-template-columns: 1fr 2fr; gap: 20px; margin-bottom: 20px; max-width: 1000px; margin-left: auto; margin-right: auto; }
+        .dashboard-panel { display: grid; grid-template-columns: 1fr 2fr; grid-template-rows: 1fr; gap: 20px; margin-bottom: 20px; max-width: 1000px; margin-left: auto; margin-right: auto; align-items: stretch; }
         .status-card { background: var(--card-bg); padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
         .status-item { margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #eee; padding-bottom: 10px; }
         .status-item:last-child { border-bottom: none; }
