@@ -5,7 +5,7 @@ import os
 import re
 import sqlite3
 import json
-from flask import Flask, render_template_string, jsonify
+from flask import Flask, render_template_string, jsonify, request
 import datetime
 import requests
 import subprocess
@@ -409,7 +409,14 @@ HTML_TEMPLATE = """
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(newConfig)
             })
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) {
+                    return response.text().then(text => {
+                        throw new Error(`HTTP error! status: ${response.status}, message: ${text}`);
+                    });
+                }
+                return response.json();
+            })
             .then(data => {
                 const status = document.getElementById('save-status');
                 if (data.success) {
@@ -419,12 +426,14 @@ HTML_TEMPLATE = """
                 } else {
                     status.textContent = '保存失败: ' + data.message;
                     status.style.color = '#dc3545';
+                    setTimeout(() => status.textContent = '', 2000);
                 }
             })
-            .catch(error => {
+            .catch(err => {
                 const status = document.getElementById('save-status');
-                status.textContent = '保存失败: ' + error.message;
+                status.textContent = `保存失败: ${err.message}`;
                 status.style.color = '#dc3545';
+                setTimeout(() => status.textContent = '', 2000);
             });
         });
         
@@ -713,15 +722,28 @@ def api_get_config():
 
 @app.route('/api/config', methods=['POST'])
 def api_update_config():
-    if request.is_json:
-        config_data = request.json
+    config_data = request.get_json(silent=True)
+    if config_data:
+        # 记录更新请求
+        log_message = f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] API Config Update - Received: {json.dumps(config_data)}"
+        with open(CONFIG["LOG_FILE_PATH"], 'a', encoding='utf-8') as log_file:
+            log_file.write(log_message + '\n')
+        # 更新配置
         for key in config_data:
             if key in CONFIG:
                 CONFIG[key] = config_data[key]
         # 保存配置到文件
         with open('config.json', 'w', encoding='utf-8') as f:
             json.dump(CONFIG, f, indent=2, ensure_ascii=False)
+        # 记录更新结果
+        log_message = f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] API Config Update - Saved: {json.dumps(CONFIG)}"
+        with open(CONFIG["LOG_FILE_PATH"], 'a', encoding='utf-8') as log_file:
+            log_file.write(log_message + '\n')
         return jsonify(success=True, message="Configuration updated successfully")
+    # 记录无效请求
+    log_message = f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] API Config Update - Invalid JSON data received"
+    with open(CONFIG["LOG_FILE_PATH"], 'a', encoding='utf-8') as log_file:
+        log_file.write(log_message + '\n')
     return jsonify(success=False, message="Invalid JSON data"), 400
 
 @app.route('/')
