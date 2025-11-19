@@ -72,7 +72,7 @@ def get_system_status():
             requests.get(CONFIG["ASR_API_URL"].replace("/transcribe", "/"), timeout=1)
             status["asr_server"] = "online"
         except requests.exceptions.RequestException:
-             status["asr_server"] = "online"
+             status["asr_server"] = "offline"
     except:
         status["asr_server"] = "offline"
 
@@ -99,12 +99,16 @@ def get_system_status():
                 # 使用 tail 命令 (Linux/Mac)
                 cmd = f"tail -n 20 {log_path}" 
                 result = subprocess.check_output(cmd, shell=True).decode('utf-8')
-                status["last_log"] = result
+                # 添加当前时间戳
+                current_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                status["last_log"] = f"[{current_time}] " + result
             except:
                 # Windows 兼容或者是读文件失败，用 Python 读取
                 with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
                     lines = f.readlines()
-                    status["last_log"] = "".join(lines[-20:])
+                    # 添加当前时间戳
+                    current_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    status["last_log"] = f"[{current_time}] " + "".join(lines[-20:])
         else:
             status["last_log"] = f"找不到日志文件: {log_path}"
     except Exception as e:
