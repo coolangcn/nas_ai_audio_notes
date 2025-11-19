@@ -5,11 +5,13 @@ import os
 import re
 import sqlite3
 import json
-from flask import Flask, render_template_string, jsonify, request
+from flask import Flask, render_template_string, jsonify, request, Response
 import datetime
 import requests
 import subprocess
 import argparse
+import time
+import threading
 
 # --- 配置 ---
 # 获取脚本自身所在的目录
@@ -425,6 +427,26 @@ HTML_TEMPLATE = """
         .avatar-3 { background: #8E44AD; } /* 深紫色 */
         .avatar-4 { background: #DC3545; } /* 鲜红色 */
 
+        /* === 视图 4: 实时日志样式 === */
+        .logs-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 1px solid #eee; }
+        .logs-controls { display: flex; gap: 10px; align-items: center; }
+        .logs-status { display: flex; gap: 10px; align-items: center; }
+        .logs-container { height: calc(100vh - 200px); }
+        .logs-window { 
+            background: var(--console-bg); 
+            color: var(--console-text); 
+            padding: 15px; 
+            border-radius: 8px; 
+            font-family: monospace; 
+            font-size: 0.85em; 
+            height: 100%; 
+            overflow-y: auto; 
+            white-space: pre-wrap; 
+        }
+        .btn { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; }
+        .btn-primary { background-color: var(--primary); color: white; }
+        .btn-secondary { background-color: #6c757d; color: white; }
+
     </style>
 </head>
 <body>
@@ -433,6 +455,7 @@ HTML_TEMPLATE = """
         <button class="nav-btn active" onclick="switchTab('dashboard')">️ 仪表盘</button>
         <button class="nav-btn" onclick="switchTab('chat')"> 时光对话</button>
         <button class="nav-btn" onclick="switchTab('analysis')">📊 统计分析</button>
+        <button class="nav-btn" onclick="switchTab('logs')">📄 实时日志</button>
         <button class="nav-btn" onclick="switchTab('config')">⚙️ 配置管理</button>
     </div>
 
@@ -475,6 +498,23 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
+    <div id="view-logs" class="view-container">
+        <div class="logs-header">
+            <h2>📄 实时日志</h2>
+            <div class="logs-controls">
+                <button id="toggle-logs-btn" class="btn btn-primary">开始接收日志</button>
+                <button id="clear-logs-btn" class="btn btn-secondary">清空日志</button>
+                <div class="logs-status">
+                    <span id="logs-connection-status" class="badge bg-red">未连接</span>
+                    <span id="logs-lines-count">0 行</span>
+                </div>
+            </div>
+        </div>
+        <div class="logs-container">
+            <div id="logs-display" class="logs-window"></div>
+        </div>
+    </div>
+
     <div id="view-config" class="view-container">
         <div id="config-content" style="max-width: 1000px; margin: 0 auto; padding: 20px;">
             <h2 style="color: #007bff; margin-bottom: 20px;">系统配置</h2>
@@ -502,11 +542,17 @@ HTML_TEMPLATE = """
             if(tabName === 'dashboard') btns[0].classList.add('active');
             else if(tabName === 'chat') btns[1].classList.add('active');
             else if(tabName === 'analysis') btns[2].classList.add('active');
-            else if(tabName === 'config') btns[3].classList.add('active');
+            else if(tabName === 'logs') btns[3].classList.add('active');
+            else if(tabName === 'config') btns[4].classList.add('active');
             
             // Load config when switching to config tab
             if (tabName === 'config') {
                 loadConfig();
+            }
+            
+            // Initialize logs when switching to logs tab
+            if (tabName === 'logs') {
+                initLogsView();
             }
         }
 
@@ -1004,6 +1050,154 @@ HTML_TEMPLATE = """
             container.innerHTML = html;
         }
 
+        // === 实时日志功能 ===
+        let logsEventSource = null;
+        let logsLineCount = 0;
+        let isLogsConnected = false;
+
+        // 初始化日志视图
+        function initLogsView() {
+            // 如果已经连接，不需要重新初始化
+            if (logsEventSource && isLogsConnected) {
+                return;
+            }
+            
+            // 设置按钮事件
+            const toggleBtn = document.getElementById('toggle-logs-btn');
+            const clearBtn = document.getElementById('clear-logs-btn');
+            
+            toggleBtn.onclick = toggleLogsConnection;
+            clearBtn.onclick = clearLogsDisplay;
+            
+            // 更新状态显示
+            updateLogsStatus();
+        }
+
+        // 切换日志连接状态
+        function toggleLogsConnection() {
+            const toggleBtn = document.getElementById('toggle-logs-btn');
+            
+            if (logsEventSource && isLogsConnected) {
+                // 断开连接
+                logsEventSource.close();
+                logsEventSource = null;
+                isLogsConnected = false;
+                toggleBtn.textContent = '开始接收日志';
+                updateLogsStatus();
+            } else {
+                // 建立连接
+                connectToLogsStream();
+                toggleBtn.textContent = '停止接收日志';
+            }
+        }
+
+        // 连接到SSE日志流
+        function connectToLogsStream() {
+            try {
+                logsEventSource = new EventSource('/logs/stream');
+                
+                logsEventSource.onopen = function() {
+                    isLogsConnected = true;
+                    updateLogsStatus();
+                    addLogMessage('系统', '已连接到日志流', 'info');
+                };
+                
+                logsEventSource.onmessage = function(event) {
+                    try {
+                        const data = JSON.parse(event.data);
+                        
+                        if (data.type === 'log') {
+                            addLogMessage('日志', data.message, 'log');
+                        } else if (data.type === 'connected') {
+                            addLogMessage('系统', data.message, 'success');
+                        } else if (data.type === 'heartbeat') {
+                            // 心跳消息，不显示
+                        } else if (data.type === 'error') {
+                            addLogMessage('错误', data.message, 'error');
+                        }
+                    } catch (e) {
+                        addLogMessage('解析错误', event.data, 'error');
+                    }
+                };
+                
+                logsEventSource.onerror = function() {
+                    isLogsConnected = false;
+                    updateLogsStatus();
+                    addLogMessage('系统', '日志流连接错误', 'error');
+                    
+                    // 5秒后尝试重连
+                    setTimeout(function() {
+                        if (document.getElementById('view-logs').classList.contains('active')) {
+                            connectToLogsStream();
+                        }
+                    }, 5000);
+                };
+                
+            } catch (e) {
+                addLogMessage('错误', '无法创建日志流连接: ' + e.message, 'error');
+            }
+        }
+
+        // 添加日志消息到显示区域
+        function addLogMessage(source, message, type) {
+            const logsDisplay = document.getElementById('logs-display');
+            const timestamp = new Date().toLocaleTimeString();
+            
+            // 根据类型设置不同的颜色
+            let colorClass = '';
+            if (type === 'error') {
+                colorClass = 'color: #ff6b6b;';
+            } else if (type === 'success') {
+                colorClass = 'color: #51cf66;';
+            } else if (type === 'info') {
+                colorClass = 'color: #74c0fc;';
+            } else {
+                colorClass = 'color: var(--console-text);';
+            }
+            
+            const logEntry = document.createElement('div');
+            logEntry.style.marginBottom = '2px';
+            logEntry.innerHTML = `<span style="color: #888;">[${timestamp}]</span> <span style="color: #aaa;">[${source}]</span> <span style="${colorClass}">${message}</span>`;
+            
+            logsDisplay.appendChild(logEntry);
+            logsLineCount++;
+            
+            // 自动滚动到底部
+            logsDisplay.scrollTop = logsDisplay.scrollHeight;
+            
+            // 限制显示的行数，防止内存占用过多
+            const maxLines = 1000;
+            if (logsDisplay.children.length > maxLines) {
+                logsDisplay.removeChild(logsDisplay.firstChild);
+            }
+            
+            updateLogsStatus();
+        }
+
+        // 清空日志显示
+        function clearLogsDisplay() {
+            const logsDisplay = document.getElementById('logs-display');
+            logsDisplay.innerHTML = '';
+            logsLineCount = 0;
+            updateLogsStatus();
+        }
+
+        // 更新日志状态显示
+        function updateLogsStatus() {
+            const statusBadge = document.getElementById('logs-connection-status');
+            const linesCount = document.getElementById('logs-lines-count');
+            
+            if (isLogsConnected) {
+                statusBadge.textContent = '已连接';
+                statusBadge.className = 'badge bg-green';
+            } else {
+                statusBadge.textContent = '未连接';
+                statusBadge.className = 'badge bg-red';
+            }
+            
+            linesCount.textContent = `${logsLineCount} 行`;
+        }
+
         setInterval(updateLoop, 3000);
         updateLoop();
     </script>
@@ -1121,6 +1315,109 @@ def api_delete_chat_session(session_id):
             return jsonify(success=False, message="Failed to delete chat session"), 500
     except Exception as e:
         return jsonify(success=False, error=str(e)), 500
+
+# SSE日志流接口
+@app.route('/logs/stream')
+def stream_logs():
+    """SSE日志流接口，实时传递服务端日志"""
+    def generate():
+        # 确定日志文件路径，先尝试CONFIG中的路径，然后尝试常见位置
+        log_paths = [
+            CONFIG["LOG_FILE_PATH"],
+            "transcribe.log",
+            "asr_server.log",
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "transcribe.log"),
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "asr_server.log")
+        ]
+        
+        log_path = None
+        for path in log_paths:
+            if os.path.exists(path):
+                log_path = path
+                break
+        
+        # 如果没有找到日志文件，使用默认路径
+        if not log_path:
+            log_path = "transcribe.log"
+            # 尝试创建一个空日志文件
+            try:
+                with open(log_path, 'w', encoding='utf-8') as f:
+                    f.write(f"# 日志文件创建于 {datetime.datetime.now()}\n")
+            except:
+                pass
+        
+        # 获取日志文件的初始大小
+        last_size = 0
+        try:
+            if os.path.exists(log_path):
+                last_size = os.path.getsize(log_path)
+        except:
+            pass
+        
+        # 发送连接确认
+        yield f"data: {json.dumps({'type': 'connected', 'message': f'已连接到日志流: {log_path}'})}\n\n"
+        
+        # 读取最后几行作为初始内容
+        try:
+            if os.path.exists(log_path) and last_size > 0:
+                with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    lines = f.readlines()
+                    # 只发送最后10行作为初始内容
+                    for line in lines[-10:]:
+                        if line.strip():  # 只发送非空行
+                            yield f"data: {json.dumps({'type': 'log', 'message': line.strip()})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': f'读取初始日志内容失败: {str(e)}'})}\n\n"
+        
+        # 持续监控日志文件
+        last_heartbeat = time.time()
+        while True:
+            try:
+                current_time = time.time()
+                
+                # 每30秒发送一次心跳
+                if current_time - last_heartbeat > 30:
+                    yield f"data: {json.dumps({'type': 'heartbeat', 'timestamp': int(current_time)})}\n\n"
+                    last_heartbeat = current_time
+                
+                # 检查文件是否存在
+                if os.path.exists(log_path):
+                    try:
+                        current_size = os.path.getsize(log_path)
+                        
+                        # 如果文件大小增加，读取新内容
+                        if current_size > last_size:
+                            with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                f.seek(last_size)
+                                new_lines = f.readlines()
+                                for line in new_lines:
+                                    if line.strip():  # 只发送非空行
+                                        yield f"data: {json.dumps({'type': 'log', 'message': line.strip()})}\n\n"
+                            last_size = current_size
+                    except Exception as e:
+                        yield f"data: {json.dumps({'type': 'error', 'message': f'读取新日志内容失败: {str(e)}'})}\n\n"
+                else:
+                    # 文件不存在，尝试重新创建
+                    try:
+                        with open(log_path, 'w', encoding='utf-8') as f:
+                            f.write(f"# 日志文件重新创建于 {datetime.datetime.now()}\n")
+                        last_size = 0
+                        yield f"data: {json.dumps({'type': 'info', 'message': '日志文件已重新创建'})}\n\n"
+                    except Exception as e:
+                        yield f"data: {json.dumps({'type': 'error', 'message': f'无法创建日志文件: {str(e)}'})}\n\n"
+                
+                # 短暂休眠，减少CPU使用
+                time.sleep(1)
+                
+            except GeneratorExit:
+                # 客户端断开连接
+                break
+            except Exception as e:
+                # 发送错误信息
+                yield f"data: {json.dumps({'type': 'error', 'message': f'日志监控错误: {str(e)}'})}\n\n"
+                time.sleep(5)  # 出错时等待更长时间
+    
+    return Response(generate(), mimetype='text/event-stream')
 
 @app.route('/')
 def index():
