@@ -199,6 +199,159 @@ def get_transcripts():
     except:
         return []
 
+# ---------------- 对话历史功能 ----------------
+def init_chat_history_db():
+    """初始化对话历史数据库表"""
+    try:
+        db = sqlite3.connect(CONFIG["DB_PATH"])
+        cursor = db.cursor()
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS chat_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            speaker_id TEXT NOT NULL,
+            speaker_name TEXT NOT NULL,
+            message_text TEXT NOT NULL,
+            timestamp INTEGER NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        ''')
+        # 创建索引以提高查询性能
+        cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_chat_session ON chat_history(session_id);
+        ''')
+        db.commit()
+        db.close()
+        print("对话历史数据库表初始化成功")
+    except Exception as e:
+        print(f"对话历史数据库表初始化失败: {e}")
+
+def save_chat_message(session_id, speaker_id, speaker_name, message_text, timestamp):
+    """保存单条聊天消息到数据库"""
+    try:
+        db = sqlite3.connect(CONFIG["DB_PATH"])
+        cursor = db.cursor()
+        cursor.execute(
+            "INSERT INTO chat_history (session_id, speaker_id, speaker_name, message_text, timestamp) VALUES (?, ?, ?, ?, ?)",
+            (session_id, speaker_id, speaker_name, message_text, timestamp)
+        )
+        db.commit()
+        db.close()
+        return True
+    except Exception as e:
+        print(f"保存聊天消息失败: {e}")
+        return False
+
+def save_chat_session(session_id, chat_data):
+    """保存整个聊天会话到数据库"""
+    try:
+        # 首先删除已存在的会话数据
+        db = sqlite3.connect(CONFIG["DB_PATH"])
+        cursor = db.cursor()
+        cursor.execute("DELETE FROM chat_history WHERE session_id = ?", (session_id,))
+        
+        # 然后插入新的聊天数据
+        for item in chat_data:
+            if item.get('segments'):
+                for seg in item['segments']:
+                    if seg.get('text') and seg.get('text').strip():
+                        speaker_id = seg.get('spk_id', 0)
+                        speaker_name = seg.get('speaker_name', f"说话人 {speaker_id}")
+                        timestamp = seg.get('start', 0)
+                        message_text = seg.get('text', '').strip()
+                        
+                        cursor.execute(
+                            "INSERT INTO chat_history (session_id, speaker_id, speaker_name, message_text, timestamp) VALUES (?, ?, ?, ?, ?)",
+                            (session_id, speaker_id, speaker_name, message_text, timestamp)
+                        )
+            elif item.get('full_text') and item.get('full_text').strip():
+                # 处理没有分段的情况
+                speaker_id = 0
+                speaker_name = "系统"
+                timestamp = 0
+                message_text = item.get('full_text', '').strip()
+                
+                cursor.execute(
+                    "INSERT INTO chat_history (session_id, speaker_id, speaker_name, message_text, timestamp) VALUES (?, ?, ?, ?, ?)",
+                    (session_id, speaker_id, speaker_name, message_text, timestamp)
+                )
+        
+        db.commit()
+        db.close()
+        return True
+    except Exception as e:
+        print(f"保存聊天会话失败: {e}")
+        return False
+
+def get_chat_sessions():
+    """获取所有聊天会话列表"""
+    try:
+        db = sqlite3.connect(CONFIG["DB_PATH"])
+        db.row_factory = sqlite3.Row
+        cursor = db.cursor()
+        cursor.execute('''
+        SELECT session_id, MIN(created_at) as created_at, COUNT(*) as message_count
+        FROM chat_history
+        GROUP BY session_id
+        ORDER BY created_at DESC
+        ''')
+        rows = cursor.fetchall()
+        db.close()
+        
+        sessions = []
+        for row in rows:
+            sessions.append({
+                'session_id': row['session_id'],
+                'created_at': row['created_at'],
+                'message_count': row['message_count']
+            })
+        return sessions
+    except Exception as e:
+        print(f"获取聊天会话列表失败: {e}")
+        return []
+
+def get_chat_session_messages(session_id):
+    """获取特定聊天会话的所有消息"""
+    try:
+        db = sqlite3.connect(CONFIG["DB_PATH"])
+        db.row_factory = sqlite3.Row
+        cursor = db.cursor()
+        cursor.execute('''
+        SELECT speaker_id, speaker_name, message_text, timestamp
+        FROM chat_history
+        WHERE session_id = ?
+        ORDER BY timestamp ASC
+        ''', (session_id,))
+        rows = cursor.fetchall()
+        db.close()
+        
+        messages = []
+        for row in rows:
+            messages.append({
+                'speaker_id': row['speaker_id'],
+                'speaker_name': row['speaker_name'],
+                'message_text': row['message_text'],
+                'timestamp': row['timestamp'],
+                'start_fmt': format_timestamp(row['timestamp'])
+            })
+        return messages
+    except Exception as e:
+        print(f"获取聊天会话消息失败: {e}")
+        return []
+
+def delete_chat_session(session_id):
+    """删除特定聊天会话"""
+    try:
+        db = sqlite3.connect(CONFIG["DB_PATH"])
+        cursor = db.cursor()
+        cursor.execute("DELETE FROM chat_history WHERE session_id = ?", (session_id,))
+        db.commit()
+        db.close()
+        return True
+    except Exception as e:
+        print(f"删除聊天会话失败: {e}")
+        return False
+
 # --- HTML 模板 ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -301,6 +454,16 @@ HTML_TEMPLATE = """
     </div>
 
     <div id="view-chat" class="view-container">
+        <div style="max-width: 800px; margin: 0 auto; padding: 10px; display: flex; justify-content: space-between; align-items: center;">
+            <h3 style="margin: 0; color: #007bff;">时光对话</h3>
+            <div>
+                <select id="chat-session-select" style="margin-right: 10px; padding: 5px;">
+                    <option value="">选择历史会话...</option>
+                </select>
+                <button id="save-chat-btn" class="btn btn-primary" style="padding: 5px 15px;">保存对话</button>
+                <button id="new-chat-btn" class="btn btn-secondary" style="padding: 5px 15px; margin-left: 5px;">新建会话</button>
+            </div>
+        </div>
         <div class="chat-container" id="chat-content">
             <div style="text-align: center; color: #999; margin-top: 50px;">正在生成对话流...</div>
         </div>
@@ -386,6 +549,143 @@ HTML_TEMPLATE = """
                     form.innerHTML = `<div style="text-align: center; color: #dc3545;">加载配置失败: ${error.message}</div>`;
                 });
         }
+
+        // 对话历史相关功能
+        let currentChatData = [];
+        let currentSessionId = null;
+
+        // 加载聊天会话列表
+        function loadChatSessions() {
+            fetch('/api/chat/sessions')
+                .then(response => response.json())
+                .then(sessions => {
+                    const select = document.getElementById('chat-session-select');
+                    select.innerHTML = '<option value="">选择历史会话...</option>';
+                    
+                    sessions.forEach(session => {
+                        const option = document.createElement('option');
+                        option.value = session.session_id;
+                        // 格式化日期显示
+                        const createdDate = new Date(session.created_at).toLocaleString();
+                        option.textContent = `${session.session_id} (${createdDate})`;
+                        select.appendChild(option);
+                    });
+                })
+                .catch(error => {
+                    console.error('加载聊天会话失败:', error);
+                });
+        }
+
+        // 保存当前对话
+        function saveChatSession() {
+            if (!currentChatData || currentChatData.length === 0) {
+                alert('没有可保存的对话内容');
+                return;
+            }
+
+            const sessionName = prompt('请输入会话名称:', `对话_${new Date().toLocaleDateString()}`);
+            if (!sessionName) return;
+
+            const sessionId = sessionName.replace(/\s+/g, '_').replace(/[^\w\u4e00-\u9fa5]/g, '');
+            
+            // 准备符合后端期望的数据结构
+            const chatData = [];
+            currentChatData.forEach(item => {
+                if (item.segments) {
+                    chatData.push({
+                        segments: item.segments
+                    });
+                } else if (item.message_text) {
+                    // 如果是已加载的历史消息，转换为segments格式
+                    chatData.push({
+                        segments: [{
+                            text: item.message_text,
+                            spk_id: item.speaker_id,
+                            speaker_name: item.speaker_name,
+                            start: item.timestamp
+                        }]
+                    });
+                }
+            });
+            
+            fetch('/api/chat/session', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    session_id: sessionId,
+                    chat_data: chatData
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('对话保存成功!');
+                    loadChatSessions(); // 重新加载会话列表
+                } else {
+                    alert('保存失败: ' + data.message);
+                }
+            })
+            .catch(error => {
+                alert('保存失败: ' + error.message);
+            });
+        }
+
+        // 加载特定会话的对话
+        function loadChatSession(sessionId) {
+            if (!sessionId) {
+                // 如果没有选择会话，则加载当前转录数据
+                updateLoop();
+                return;
+            }
+
+            fetch(`/api/chat/session/${sessionId}`)
+                .then(response => response.json())
+                .then(messages => {
+                    if (messages && messages.length > 0) {
+                        currentSessionId = sessionId;
+                        // 将消息转换为前端渲染需要的格式
+                        currentChatData = messages.map(msg => ({
+                            message_text: msg.message_text,
+                            speaker_id: msg.speaker_id,
+                            speaker_name: msg.speaker_name,
+                            timestamp: msg.timestamp,
+                            start_fmt: msg.start_fmt
+                        }));
+                        renderChat(currentChatData);
+                    } else {
+                        alert('没有找到该会话的对话内容');
+                    }
+                })
+                .catch(error => {
+                    alert('加载对话失败: ' + error.message);
+                });
+        }
+
+        // 新建会话
+        function newChatSession() {
+            currentSessionId = null;
+            document.getElementById('chat-session-select').value = '';
+            updateLoop(); // 加载当前转录数据
+        }
+
+        // 添加事件监听器
+        document.addEventListener('DOMContentLoaded', function() {
+            // 保存对话按钮
+            document.getElementById('save-chat-btn').addEventListener('click', saveChatSession);
+            
+            // 新建会话按钮
+            document.getElementById('new-chat-btn').addEventListener('click', newChatSession);
+            
+            // 会话选择下拉框
+            document.getElementById('chat-session-select').addEventListener('change', function() {
+                loadChatSession(this.value);
+            });
+            
+            // 初始加载会话列表
+            loadChatSessions();
+        });
 
         // Save configuration to API
         document.getElementById('save-config-btn')?.addEventListener('click', () => {
@@ -516,6 +816,9 @@ HTML_TEMPLATE = """
 
                 const dataRes = await fetch('/api/data');
                 let items = await dataRes.json();
+                
+                // 更新当前对话数据
+                currentChatData = items;
                 
                 items = processStats(items);
                 
@@ -759,6 +1062,66 @@ def api_update_config():
         log_file.write(log_message + '\n')
     return jsonify(success=False, message="Invalid JSON data"), 400
 
+# 对话历史API端点
+@app.route('/api/chat/sessions', methods=['GET'])
+def api_get_chat_sessions():
+    """获取所有聊天会话列表"""
+    try:
+        # 确保对话历史表已初始化
+        init_chat_history_db()
+        sessions = get_chat_sessions()
+        return jsonify(sessions)
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+
+@app.route('/api/chat/session/<session_id>', methods=['GET'])
+def api_get_chat_session(session_id):
+    """获取特定聊天会话的所有消息"""
+    try:
+        # 确保对话历史表已初始化
+        init_chat_history_db()
+        messages = get_chat_session_messages(session_id)
+        return jsonify(messages)
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+
+@app.route('/api/chat/session', methods=['POST'])
+def api_save_chat_session():
+    """保存聊天会话"""
+    try:
+        # 确保对话历史表已初始化
+        init_chat_history_db()
+        
+        data = request.get_json(silent=True)
+        if not data or 'session_id' not in data or 'chat_data' not in data:
+            return jsonify(success=False, message="Missing required fields: session_id, chat_data"), 400
+        
+        session_id = data['session_id']
+        chat_data = data['chat_data']
+        
+        success = save_chat_session(session_id, chat_data)
+        if success:
+            return jsonify(success=True, message="Chat session saved successfully")
+        else:
+            return jsonify(success=False, message="Failed to save chat session"), 500
+    except Exception as e:
+        return jsonify(success=False, error=str(e)), 500
+
+@app.route('/api/chat/session/<session_id>', methods=['DELETE'])
+def api_delete_chat_session(session_id):
+    """删除特定聊天会话"""
+    try:
+        # 确保对话历史表已初始化
+        init_chat_history_db()
+        
+        success = delete_chat_session(session_id)
+        if success:
+            return jsonify(success=True, message="Chat session deleted successfully")
+        else:
+            return jsonify(success=False, message="Failed to delete chat session"), 500
+    except Exception as e:
+        return jsonify(success=False, error=str(e)), 500
+
 @app.route('/')
 def index():
     return render_template_string(HTML_TEMPLATE)
@@ -766,4 +1129,8 @@ def index():
 if __name__ == "__main__":
     args = parse_args()
     update_config(args)
+    
+    # 初始化对话历史数据库表
+    init_chat_history_db()
+    
     app.run(host='0.0.0.0', port=CONFIG["WEB_PORT"], debug=False)
