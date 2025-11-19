@@ -728,17 +728,30 @@ def api_update_config():
         log_message = f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] API Config Update - Received: {json.dumps(config_data)}"
         with open(CONFIG["LOG_FILE_PATH"], 'a', encoding='utf-8') as log_file:
             log_file.write(log_message + '\n')
-        # 更新配置
+        
+        # 首先从文件读取当前配置
+        try:
+            with open('config.json', 'r', encoding='utf-8') as f:
+                file_config = json.load(f)
+        except:
+            file_config = {}
+        
+        # 更新文件配置
         for key in config_data:
+            file_config[key] = config_data[key]
+            # 同时更新内存中的CONFIG
             if key in CONFIG:
                 CONFIG[key] = config_data[key]
+        
         # 保存配置到文件
         with open('config.json', 'w', encoding='utf-8') as f:
-            json.dump(CONFIG, f, indent=2, ensure_ascii=False)
+            json.dump(file_config, f, indent=2, ensure_ascii=False)
+        
         # 记录更新结果
-        log_message = f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] API Config Update - Saved: {json.dumps(CONFIG)}"
+        log_message = f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] API Config Update - Saved to file: {json.dumps(file_config)}"
         with open(CONFIG["LOG_FILE_PATH"], 'a', encoding='utf-8') as log_file:
             log_file.write(log_message + '\n')
+        
         return jsonify(success=True, message="Configuration updated successfully")
     # 记录无效请求
     log_message = f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] API Config Update - Invalid JSON data received"
