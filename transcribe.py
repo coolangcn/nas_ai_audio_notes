@@ -15,7 +15,7 @@ import re
 CONFIG_FILE = "config.json"
 
 DEFAULT_CONFIG = {
-    "ASR_HTTP_URL": "http://192.168.1.111:5009/transcribe",
+    "ASR_API_URL": "http://192.168.1.111:5009/transcribe",
     "SOURCE_DIR": "/volume2/download/records/Sony-2",
     "TRANSCRIPT_DIR": "/volume2/download/records/Sony-2/transcripts",
     "PROCESSED_DIR": "/volume2/download/records/Sony-2/processed",
@@ -159,7 +159,7 @@ def save_transcript_with_spk(full_text, segments, txt_path):
 
 # ---------------- 调用服务端 ----------------
 def transcribe_wav(wav_path):
-    url = CONFIG["ASR_HTTP_URL"]
+    url = CONFIG["ASR_API_URL"]
     max_retries = 3
     for attempt in range(max_retries):
         try:
