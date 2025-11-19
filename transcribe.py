@@ -12,14 +12,25 @@ import argparse
 import re
 
 # ---------------- 配置 ----------------
+CONFIG_FILE = "config.json"
+
 DEFAULT_CONFIG = {
-    "ASR_HTTP_URL": "http://192.168.1.111:5000/transcribe",
+    "ASR_HTTP_URL": "http://192.168.1.111:5009/transcribe",
     "SOURCE_DIR": "/volume2/download/records/Sony-2",
     "TRANSCRIPT_DIR": "/volume2/download/records/Sony-2/transcripts",
     "PROCESSED_DIR": "/volume2/download/records/Sony-2/processed",
     "N8N_WEBHOOK_URL": "https://n8n.moco.fun/webhook/bea45d47-d1fc-498e-bf69-d48dc079f04a",
-    "DB_PATH": "/volume2/download/records/Sony-2/transcripts.db" 
+    "DB_PATH": "/volume2/download/records/Sony-2/transcripts.db",
+    "LOG_FILE_PATH": "transcribe.log",
+    "WEB_PORT": 5010
 }
+
+# Load config from JSON file
+if os.path.exists(CONFIG_FILE):
+    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+        loaded_config = json.load(f)
+    DEFAULT_CONFIG.update(loaded_config)
+
 CONFIG = DEFAULT_CONFIG.copy()
 SUPPORTED_EXTENSIONS = ('.m4a', '.acc', '.aac', '.mp3', '.wav', '.ogg', '.flac')
 

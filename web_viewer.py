@@ -17,7 +17,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 DEFAULT_DB_PATH = "/volume2/download/records/Sony-2/transcripts.db"
 DEFAULT_SOURCE_DIR = "/volume2/download/records/Sony-2"
-DEFAULT_ASR_API_URL = "http://192.168.1.111:5000/transcribe"
+DEFAULT_ASR_API_URL = "http://192.168.1.111:5008/transcribe"
 DEFAULT_LOG_FILE_PATH = os.path.join(SCRIPT_DIR, "transcribe.log")
 DEFAULT_WEB_PORT = 5009 
 
@@ -30,11 +30,20 @@ CONFIG = {
     "WEB_PORT": DEFAULT_WEB_PORT
 }
 
+# 从JSON文件加载配置
+CONFIG_FILE = "config.json"
+if os.path.exists(CONFIG_FILE):
+    import json
+    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+        loaded_config = json.load(f)
+    CONFIG.update(loaded_config)
+
 def parse_args():
     """解析命令行参数"""
     parser = argparse.ArgumentParser(description='Web查看器脚本')
     parser.add_argument('--source-path', type=str, help='源音频文件路径')
     parser.add_argument('--port', type=int, help='Web端口', default=DEFAULT_WEB_PORT)
+    parser.add_argument('--asr-url', type=str, help='ASR服务API地址', default=DEFAULT_ASR_API_URL)
     return parser.parse_args()
 
 def update_config(args):
@@ -47,6 +56,10 @@ def update_config(args):
     
     if args.port:
         CONFIG["WEB_PORT"] = args.port
+    
+    if args.asr_url:
+        CONFIG["ASR_API_URL"] = args.asr_url
+        print(f"[配置] 使用自定义ASR服务地址: {args.asr_url}")
 
 # -----------------
 
@@ -267,6 +280,7 @@ HTML_TEMPLATE = """
         <button class="nav-btn active" onclick="switchTab('dashboard')">️ 仪表盘</button>
         <button class="nav-btn" onclick="switchTab('chat')"> 时光对话</button>
         <button class="nav-btn" onclick="switchTab('analysis')">📊 统计分析</button>
+        <button class="nav-btn" onclick="switchTab('config')">⚙️ 配置管理</button>
     </div>
 
     <div id="view-dashboard" class="view-container active">
@@ -298,6 +312,19 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
+    <div id="view-config" class="view-container">
+        <div id="config-content" style="max-width: 1000px; margin: 0 auto; padding: 20px;">
+            <h2 style="color: #007bff; margin-bottom: 20px;">系统配置</h2>
+            <div id="config-form">
+                <div style="text-align: center; color: #999;">正在加载配置...</div>
+            </div>
+            <div style="margin-top: 20px; text-align: center;">
+                <button id="save-config-btn" class="btn btn-primary" style="padding: 8px 30px; font-size: 16px;">保存配置</button>
+                <div id="save-status" style="margin-top: 10px; color: #28a745; font-weight: bold;"></div>
+            </div>
+        </div>
+    </div>
+
     <script>
         let lastDataFingerprint = "";
         const speakerColorMap = {};
@@ -312,7 +339,94 @@ HTML_TEMPLATE = """
             if(tabName === 'dashboard') btns[0].classList.add('active');
             else if(tabName === 'chat') btns[1].classList.add('active');
             else if(tabName === 'analysis') btns[2].classList.add('active');
+            else if(tabName === 'config') btns[3].classList.add('active');
+            
+            // Load config when switching to config tab
+            if (tabName === 'config') {
+                loadConfig();
+            }
         }
+
+        // Load configuration from API
+        function loadConfig() {
+            fetch('/api/config')
+                .then(response => response.json())
+                .then(config => {
+                    const form = document.getElementById('config-form');
+                    form.innerHTML = '';
+                    
+                    for (const key in config) {
+                        const value = config[key];
+                        const div = document.createElement('div');
+                        div.style.marginBottom = '15px';
+                        
+                        const label = document.createElement('label');
+                        label.textContent = key;
+                        label.style.display = 'block';
+                        label.style.marginBottom = '5px';
+                        label.style.fontWeight = 'bold';
+                        
+                        const input = document.createElement('input');
+                        input.type = typeof value === 'number' ? 'number' : 'text';
+                        input.value = value;
+                        input.id = 'config-' + key;
+                        input.style.width = '100%';
+                        input.style.padding = '8px';
+                        input.style.border = '1px solid #ccc';
+                        input.style.borderRadius = '4px';
+                        input.style.fontSize = '14px';
+                        
+                        div.appendChild(label);
+                        div.appendChild(input);
+                        form.appendChild(div);
+                    }
+                })
+                .catch(error => {
+                    const form = document.getElementById('config-form');
+                    form.innerHTML = `<div style="text-align: center; color: #dc3545;">加载配置失败: ${error.message}</div>`;
+                });
+        }
+
+        // Save configuration to API
+        document.getElementById('save-config-btn')?.addEventListener('click', () => {
+            const form = document.getElementById('config-form');
+            const inputs = form.querySelectorAll('input');
+            const newConfig = {};
+            
+            inputs.forEach(input => {
+                const key = input.id.replace('config-', '');
+                const value = input.value;
+                
+                if (input.type === 'number') {
+                    newConfig[key] = parseInt(value) || parseFloat(value) || value;
+                } else {
+                    newConfig[key] = value;
+                }
+            });
+            
+            fetch('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(newConfig)
+            })
+            .then(response => response.json())
+            .then(data => {
+                const status = document.getElementById('save-status');
+                if (data.success) {
+                    status.textContent = '配置保存成功!';
+                    status.style.color = '#28a745';
+                    setTimeout(() => status.textContent = '', 2000);
+                } else {
+                    status.textContent = '保存失败: ' + data.message;
+                    status.style.color = '#dc3545';
+                }
+            })
+            .catch(error => {
+                const status = document.getElementById('save-status');
+                status.textContent = '保存失败: ' + error.message;
+                status.style.color = '#dc3545';
+            });
+        });
         
         // --- 核心辅助函数 ---
 
@@ -592,6 +706,23 @@ def api_status():
 @app.route('/api/data')
 def api_data():
     return jsonify(get_transcripts())
+
+@app.route('/api/config', methods=['GET'])
+def api_get_config():
+    return jsonify(CONFIG)
+
+@app.route('/api/config', methods=['POST'])
+def api_update_config():
+    if request.is_json:
+        config_data = request.json
+        for key in config_data:
+            if key in CONFIG:
+                CONFIG[key] = config_data[key]
+        # 保存配置到文件
+        with open('config.json', 'w', encoding='utf-8') as f:
+            json.dump(CONFIG, f, indent=2, ensure_ascii=False)
+        return jsonify(success=True, message="Configuration updated successfully")
+    return jsonify(success=False, message="Invalid JSON data"), 400
 
 @app.route('/')
 def index():
